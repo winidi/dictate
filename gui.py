@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Dictate GUI — PyQt6 tray app for voice dictation via Groq Whisper."""
+import fcntl
 import sys
 import threading
 import time
@@ -14,6 +15,22 @@ from PyQt6.QtWidgets import (
 from pynput import keyboard
 
 import core
+
+
+def _make_listener(on_press, on_release):
+    """Prefer evdev (works on Wayland+Xorg); fall back to pynput on failure."""
+    try:
+        import evdev_listener
+        l = evdev_listener.Listener(on_press=on_press, on_release=on_release)
+        l.start()
+        print("keyboard listener: evdev", file=sys.stderr)
+        return l
+    except Exception as e:
+        print(f"evdev unavailable ({e}); falling back to pynput", file=sys.stderr)
+        l = keyboard.Listener(on_press=on_press, on_release=on_release)
+        l.daemon = True
+        l.start()
+        return l
 
 
 class Bridge(QObject):
@@ -33,9 +50,18 @@ class SettingsDialog(QDialog):
 
         form = QFormLayout()
 
-        self.api_key_edit = QLineEdit(self.cfg.get("api_key", ""))
+        # --- Provider selector ---
+        self.provider_box = QComboBox()
+        for pid, pdef in core.PROVIDERS.items():
+            self.provider_box.addItem(pdef["label"], pid)
+        i = self.provider_box.findData(self.cfg.get("provider", core.DEFAULT_PROVIDER))
+        self.provider_box.setCurrentIndex(max(i, 0))
+        self.provider_box.currentIndexChanged.connect(self.on_provider_changed)
+        form.addRow("Provider:", self.provider_box)
+
+        # --- Single API key field (rebound to the active provider's stored key) ---
+        self.api_key_edit = QLineEdit()
         self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.api_key_edit.setPlaceholderText("gsk_...")
         show_btn = QPushButton("show")
         show_btn.setCheckable(True)
         show_btn.setMaximumWidth(60)
@@ -50,7 +76,14 @@ class SettingsDialog(QDialog):
         row.addWidget(show_btn)
         wrap = QWidget()
         wrap.setLayout(row)
-        form.addRow("Groq API key:", wrap)
+        self.api_key_label = QLabel()
+        form.addRow(self.api_key_label, wrap)
+
+        # Per-provider key cache so switching doesn't wipe the other key.
+        self._keys = {
+            pid: self.cfg.get(pdef["key_field"], "")
+            for pid, pdef in core.PROVIDERS.items()
+        }
 
         self.mode_box = QComboBox()
         self.mode_box.addItem("Push-to-talk (hold key)", "ptt")
@@ -67,11 +100,10 @@ class SettingsDialog(QDialog):
         form.addRow("Hotkey:", self.key_box)
 
         self.model_box = QComboBox()
-        self.model_box.addItem("whisper-large-v3-turbo (fastest)", "whisper-large-v3-turbo")
-        self.model_box.addItem("whisper-large-v3 (most accurate)", "whisper-large-v3")
-        i = self.model_box.findData(self.cfg.get("model", core.DEFAULT_MODEL))
-        self.model_box.setCurrentIndex(max(i, 0))
         form.addRow("Model:", self.model_box)
+        self.refresh_model_box(self.cfg.get("model", core.DEFAULT_MODEL))
+        # sync API-key field + label to the currently-selected provider
+        self.on_provider_changed()
 
         self.threshold_box = QDoubleSpinBox()
         self.threshold_box.setRange(0.0, 5.0)
@@ -109,6 +141,39 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(buttons)
 
+    def on_provider_changed(self):
+        # persist edits to the previously-shown key
+        for pid in self._keys:
+            if pid == self.provider_box.currentData():
+                continue  # will be re-loaded below
+        # Actually: the key we currently see corresponds to whatever was shown
+        # before the switch. Save it back to that slot BEFORE swapping display.
+        # We track "shown provider" via an attribute.
+        prev = getattr(self, "_shown_provider", None)
+        if prev is not None and prev in self._keys:
+            self._keys[prev] = self.api_key_edit.text().strip()
+
+        pid = self.provider_box.currentData()
+        pdef = core.PROVIDERS[pid]
+        self._shown_provider = pid
+        self.api_key_label.setText(f"{pdef['label']} API key:")
+        self.api_key_edit.setText(self._keys.get(pid, ""))
+        self.api_key_edit.setPlaceholderText(f"{pdef['key_prefix']}...")
+        self.refresh_model_box(pdef["default_model"])
+
+    def refresh_model_box(self, preferred_model):
+        pid = self.provider_box.currentData()
+        pdef = core.PROVIDERS[pid]
+        self.model_box.blockSignals(True)
+        self.model_box.clear()
+        for label, mid in pdef["models"]:
+            self.model_box.addItem(label, mid)
+        i = self.model_box.findData(preferred_model)
+        if i < 0:
+            i = self.model_box.findData(pdef["default_model"])
+        self.model_box.setCurrentIndex(max(i, 0))
+        self.model_box.blockSignals(False)
+
     def on_test(self):
         key = self.api_key_edit.text().strip()
         if not key:
@@ -117,7 +182,7 @@ class SettingsDialog(QDialog):
         self.test_btn.setEnabled(False)
         self.test_btn.setText("Testing...")
         QApplication.processEvents()
-        ok = core.test_api_key(key)
+        ok = core.test_api_key(key, self.provider_box.currentData())
         self.test_btn.setEnabled(True)
         self.test_btn.setText("Test API key")
         if ok:
@@ -126,12 +191,17 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "Dictate", "API key rejected.")
 
     def values(self):
+        # sync current field back into the per-provider cache first
+        pid = self.provider_box.currentData()
+        self._keys[pid] = self.api_key_edit.text().strip()
         return {
-            "api_key": self.api_key_edit.text().strip(),
-            "mode": self.mode_box.currentData(),
-            "key": self.key_box.currentData(),
-            "model": self.model_box.currentData(),
-            "threshold": float(self.threshold_box.value()),
+            "provider":       pid,
+            "api_key":        self._keys.get("groq", ""),
+            "openai_api_key": self._keys.get("openai", ""),
+            "mode":           self.mode_box.currentData(),
+            "key":            self.key_box.currentData(),
+            "model":          self.model_box.currentData(),
+            "threshold":      float(self.threshold_box.value()),
         }
 
 
@@ -241,7 +311,7 @@ class MainWindow(QMainWindow):
         self.update_info()
         self.start_listener()
 
-        if not self.cfg.get("api_key"):
+        if not core.provider_key(self.cfg):
             QTimer.singleShot(250, self.first_run)
 
     def first_run(self):
@@ -292,9 +362,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        self.listener = keyboard.Listener(on_press=on_press, on_release=on_release)
-        self.listener.daemon = True
-        self.listener.start()
+        self.listener = _make_listener(on_press, on_release)
 
     def restart_listener(self):
         if self.listener:
@@ -329,7 +397,8 @@ class MainWindow(QMainWindow):
         # a combo while pressing the hotkey shouldn't kill an ongoing session
         # that was started by a previous tap.
         if self.cfg["mode"] == "ptt" and self.recording_active:
-            self.recorder.stop()
+            # Offload PipeWire close to keep the GUI thread responsive.
+            threading.Thread(target=self.recorder.stop, daemon=True).start()
             self.recording_active = False
             self.set_status("ready", "Cancelled (combo)")
 
@@ -342,7 +411,8 @@ class MainWindow(QMainWindow):
         duration = time.monotonic() - self.press_time
         min_hold = float(self.cfg.get("threshold", 0.0))
         if min_hold > 0 and duration < min_hold:
-            self.recorder.stop()
+            # Discard branch also blocks on recorder.stop() → freeze. Offload.
+            threading.Thread(target=self.recorder.stop, daemon=True).start()
             self.recording_active = False
             self.set_status("ready", f"Discarded (held {duration:.1f}s)")
             return
@@ -350,7 +420,7 @@ class MainWindow(QMainWindow):
         self.recording_active = False
 
     def start_recording(self) -> bool:
-        if not self.cfg.get("api_key"):
+        if not core.provider_key(self.cfg):
             self.set_status("error", "No API key — open Settings")
             return False
         self.recorder.start()
@@ -358,23 +428,31 @@ class MainWindow(QMainWindow):
         return True
 
     def stop_and_transcribe(self):
-        audio = self.recorder.stop()
-        if audio is None:
-            self.set_status("ready", "Ready")
-            return
+        # recorder.stop() can block for hundreds of ms on PipeWire close,
+        # which freezes the GUI ("main on_release doesn't return"). Move the
+        # whole pipeline (stop + transcribe) onto a worker thread and update
+        # status immediately from the main thread instead.
         self.set_status("transcribing", "Transcribing...")
-        threading.Thread(target=self._do_transcribe, args=(audio,), daemon=True).start()
+        threading.Thread(target=self._stop_and_transcribe_worker, daemon=True).start()
 
-    def _do_transcribe(self, audio):
+    def _stop_and_transcribe_worker(self):
         try:
-            text = core.transcribe(audio, self.cfg["api_key"], self.cfg["model"])
+            audio = self.recorder.stop()
+        except Exception as e:
+            self.bridge.error.emit(str(e))
+            return
+        if audio is None:
+            self.bridge.transcribed.emit("")
+            return
+        try:
+            text = core.transcribe(audio, self.cfg)
             self.bridge.transcribed.emit(text or "")
         except Exception as e:
             self.bridge.error.emit(str(e))
 
     def on_transcribed(self, text):
         if text:
-            core.type_text(text)
+            threading.Thread(target=core.type_text, args=(text,), daemon=True).start()
             self.last.setPlainText(text)
         self.set_status("ready", "Ready")
 
@@ -404,14 +482,34 @@ class MainWindow(QMainWindow):
         self.activateWindow()
 
     def closeEvent(self, event):
-        if self.tray and self.tray.isVisible():
-            self.hide()
-            event.ignore()
-        else:
-            QApplication.quit()
+        QApplication.quit()
+
+
+_LOCK_FD = None
+
+
+def acquire_single_instance_lock():
+    global _LOCK_FD
+    core.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    lock_path = core.CONFIG_DIR / "dictate.lock"
+    fd = open(lock_path, "w")
+    try:
+        fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fd.close()
+        core.notify("Dictate is already running", urgency="low")
+        return False
+    _LOCK_FD = fd
+    return True
 
 
 def main():
+    if not acquire_single_instance_lock():
+        sys.exit(0)
+    # Let Ctrl+C in the terminal actually kill us — Qt's C++ event loop
+    # otherwise never yields to Python's SIGINT handler.
+    import signal
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
     app = QApplication(sys.argv)
     app.setApplicationName("Dictate")
     has_tray = QSystemTrayIcon.isSystemTrayAvailable()

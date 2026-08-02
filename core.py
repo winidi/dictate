@@ -13,9 +13,40 @@ from pynput import keyboard
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
-GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
-GROQ_MODELS_URL = "https://api.groq.com/openai/v1/models"
-DEFAULT_MODEL = "whisper-large-v3-turbo"
+
+PROVIDERS = {
+    "groq": {
+        "label":         "Groq",
+        "url":           "https://api.groq.com/openai/v1/audio/transcriptions",
+        "models_url":    "https://api.groq.com/openai/v1/models",
+        "key_field":     "api_key",
+        "key_prefix":    "gsk_",
+        "default_model": "whisper-large-v3-turbo",
+        "models": [
+            ("whisper-large-v3-turbo (fastest)",   "whisper-large-v3-turbo"),
+            ("whisper-large-v3 (most accurate)",    "whisper-large-v3"),
+        ],
+    },
+    "openai": {
+        "label":         "OpenAI",
+        "url":           "https://api.openai.com/v1/audio/transcriptions",
+        "models_url":    "https://api.openai.com/v1/models",
+        "key_field":     "openai_api_key",
+        "key_prefix":    "sk-",
+        "default_model": "gpt-4o-mini-transcribe",
+        "models": [
+            ("gpt-4o-mini-transcribe (fast · cheap)", "gpt-4o-mini-transcribe"),
+            ("gpt-4o-transcribe (best quality)",      "gpt-4o-transcribe"),
+            ("whisper-1 (classic)",                   "whisper-1"),
+        ],
+    },
+}
+
+# Backward-compat aliases used elsewhere in the codebase.
+DEFAULT_PROVIDER = "groq"
+DEFAULT_MODEL    = PROVIDERS[DEFAULT_PROVIDER]["default_model"]
+GROQ_URL         = PROVIDERS["groq"]["url"]
+GROQ_MODELS_URL  = PROVIDERS["groq"]["models_url"]
 
 CONFIG_DIR = Path.home() / ".config" / "dictate"
 CONFIG_PATH = CONFIG_DIR / "config.json"
@@ -38,15 +69,30 @@ KEY_MAP.update({
     "alt_r":       {keyboard.Key.alt_r, keyboard.Key.alt_gr},
     "shift":       {keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r},
     "super":       {keyboard.Key.cmd, keyboard.Key.cmd_l, keyboard.Key.cmd_r},
+    # Mouse-side buttons. Sentinels are tuples emitted by evdev_listener;
+    # pynput won't see these (mouse events go through a separate listener) —
+    # so these hotkeys only work when the evdev backend is active.
+    "mouse_back":    {("mouse", "back")},
+    "mouse_forward": {("mouse", "forward")},
+    "mouse_side":    {("mouse", "side")},
+    "mouse_extra":   {("mouse", "extra")},
+    "mouse_task":    {("mouse", "task")},
 })
 
 DEFAULT_CONFIG = {
-    "api_key": "",
-    "mode": "ptt",
-    "key": "f9",
-    "model": DEFAULT_MODEL,
-    "threshold": 0.0,  # seconds; long-press time before recording starts
+    "provider":       DEFAULT_PROVIDER,
+    "api_key":        "",   # Groq key (kept name for backward compat)
+    "openai_api_key": "",   # OpenAI key
+    "mode":           "ptt",
+    "key":            "f9",
+    "model":          DEFAULT_MODEL,
+    "threshold":      0.0,
 }
+
+
+def provider_key(cfg):
+    p = PROVIDERS.get(cfg.get("provider", DEFAULT_PROVIDER), PROVIDERS[DEFAULT_PROVIDER])
+    return cfg.get(p["key_field"], "")
 
 
 def load_config():
@@ -78,6 +124,18 @@ def notify(msg, urgency="normal"):
 def type_text(text):
     if not text:
         return
+    # Prefer ydotool: it writes via /dev/uinput, so it works in native Wayland
+    # windows too (xdotool's XTEST is XWayland-only and silently drops the text
+    # in GNOME/Firefox/etc). Fall back to xdotool if ydotool is missing.
+    try:
+        subprocess.run(
+            ["ydotool", "type", "--key-delay", "0", "--", text],
+            check=False,
+            stderr=subprocess.DEVNULL,
+        )
+        return
+    except FileNotFoundError:
+        pass
     subprocess.run(["xdotool", "type", "--delay", "0", "--", text], check=False)
 
 
@@ -129,20 +187,25 @@ def to_wav_bytes(audio):
     return buf
 
 
-def transcribe(audio, api_key, model=DEFAULT_MODEL):
+def transcribe(audio, cfg):
+    provider = cfg.get("provider", DEFAULT_PROVIDER)
+    p = PROVIDERS.get(provider, PROVIDERS[DEFAULT_PROVIDER])
+    key = provider_key(cfg)
+    model = cfg.get("model") or p["default_model"]
     wav = to_wav_bytes(audio)
     files = {"file": ("audio.wav", wav, "audio/wav")}
     data = {"model": model, "response_format": "text"}
-    headers = {"Authorization": f"Bearer {api_key}"}
-    r = requests.post(GROQ_URL, files=files, data=data, headers=headers, timeout=30)
+    headers = {"Authorization": f"Bearer {key}"}
+    r = requests.post(p["url"], files=files, data=data, headers=headers, timeout=30)
     r.raise_for_status()
     return r.text.strip()
 
 
-def test_api_key(api_key):
+def test_api_key(api_key, provider=DEFAULT_PROVIDER):
+    p = PROVIDERS.get(provider, PROVIDERS[DEFAULT_PROVIDER])
     try:
         r = requests.get(
-            GROQ_MODELS_URL,
+            p["models_url"],
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=5,
         )

@@ -7,24 +7,42 @@ echo "Dictate installer"
 echo "================="
 echo
 
-echo "[1/3] Installing system packages (needs sudo)..."
+echo "[1/4] Installing system packages (needs sudo)..."
 sudo apt-get update -qq
-sudo apt-get install -y xdotool libnotify-bin python3-pip libxcb-cursor0
+# xdotool: X11 typing fallback
+# ydotool: /dev/uinput typing, works in native Wayland windows
+# python3-evdev: /dev/input/event* reader, works on Wayland where pynput is blind
+sudo apt-get install -y \
+    xdotool ydotool libnotify-bin python3-pip libxcb-cursor0 python3-evdev
 
 echo
-echo "[2/3] Installing Python packages..."
+echo "[2/4] Installing Python packages..."
 pip install --user --break-system-packages \
     PyQt6 sounddevice pynput requests numpy
 
 echo
-echo "[3/3] Creating desktop entry..."
+echo "[3/4] Setting up Wayland/evdev access..."
+# On Wayland the compositor doesn't forward global key events to XWayland,
+# so pynput sees nothing. Dictate reads /dev/input/event* directly via evdev
+# instead. That requires membership in group `input`.
+if ! id -nG "$USER" | grep -qw input; then
+    echo "  Adding $USER to group 'input' (needed for global-hotkey capture on Wayland)."
+    sudo usermod -a -G input "$USER"
+    echo "  NOTE: log out AND log in again for the new group to take effect."
+    echo "        (or reboot — see WAYLAND_NOTES.md for the 'linger' gotcha)"
+else
+    echo "  Already in group 'input'."
+fi
+
+echo
+echo "[4/4] Creating desktop entry..."
 mkdir -p ~/.local/share/applications
 cat > ~/.local/share/applications/dictate.desktop <<EOF
 [Desktop Entry]
 Type=Application
 Name=Dictate
 GenericName=Voice dictation
-Comment=Voice dictation to keyboard (Groq Whisper)
+Comment=Voice dictation to keyboard (Groq / OpenAI Whisper)
 Exec=python3 ${SCRIPT_DIR}/gui.py
 Icon=audio-input-microphone
 Terminal=false
@@ -41,5 +59,6 @@ echo "Launch:"
 echo "  - From app menu: 'Dictate'"
 echo "  - From shell:    python3 ${SCRIPT_DIR}/gui.py"
 echo
-echo "On first launch: open Settings and paste your Groq API key."
-echo "Free key at https://console.groq.com"
+echo "On first launch: open Settings and paste your API key."
+echo "  - Groq (free tier):  https://console.groq.com"
+echo "  - OpenAI:            https://platform.openai.com/api-keys"
