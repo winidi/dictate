@@ -124,19 +124,28 @@ def notify(msg, urgency="normal"):
 def type_text(text):
     if not text:
         return
-    # Prefer ydotool: it writes via /dev/uinput, so it works in native Wayland
-    # windows too (xdotool's XTEST is XWayland-only and silently drops the text
-    # in GNOME/Firefox/etc). Fall back to xdotool if ydotool is missing.
-    try:
-        subprocess.run(
-            ["ydotool", "type", "--key-delay", "0", "--", text],
-            check=False,
-            stderr=subprocess.DEVNULL,
-        )
-        return
-    except FileNotFoundError:
-        pass
-    subprocess.run(["xdotool", "type", "--delay", "0", "--", text], check=False)
+    # xdotool respects the active XKB layout (correct German umlauts, no y/z
+    # swap on QWERTZ). Prefer it on X11 where it actually works. On Wayland,
+    # native windows ignore XTEST so we must fall back to ydotool, which
+    # writes raw US-QWERTY scancodes via /dev/uinput — layout-agnostic and
+    # therefore wrong for non-US keyboards, but there is no better option
+    # for global typing into native Wayland windows today.
+    import os
+    on_x11 = os.environ.get("XDG_SESSION_TYPE") == "x11"
+    tools = ["xdotool", "ydotool"] if on_x11 else ["ydotool", "xdotool"]
+    for tool in tools:
+        try:
+            if tool == "xdotool":
+                subprocess.run(["xdotool", "type", "--delay", "0", "--", text], check=False)
+            else:
+                subprocess.run(
+                    ["ydotool", "type", "--key-delay", "0", "--", text],
+                    check=False,
+                    stderr=subprocess.DEVNULL,
+                )
+            return
+        except FileNotFoundError:
+            continue
 
 
 class Recorder:

@@ -436,6 +436,10 @@ class MainWindow(QMainWindow):
         threading.Thread(target=self._stop_and_transcribe_worker, daemon=True).start()
 
     def _stop_and_transcribe_worker(self):
+        # Short trailing buffer: PipeWire has ~50-100ms input latency and
+        # people typically finish the last syllable *after* they release the
+        # hotkey. Without this the last word tends to get clipped.
+        time.sleep(0.25)
         try:
             audio = self.recorder.stop()
         except Exception as e:
