@@ -26,6 +26,7 @@ PROVIDERS = {
             ("whisper-large-v3-turbo (fastest)",   "whisper-large-v3-turbo"),
             ("whisper-large-v3 (most accurate)",    "whisper-large-v3"),
         ],
+        "is_local":      False,
     },
     "openai": {
         "label":         "OpenAI",
@@ -39,6 +40,17 @@ PROVIDERS = {
             ("gpt-4o-transcribe (best quality)",      "gpt-4o-transcribe"),
             ("whisper-1 (classic)",                   "whisper-1"),
         ],
+        "is_local":      False,
+    },
+    "parakeet_local": {
+        "label":         "Local (Parakeet DE, CPU offline)",
+        "url":           None,
+        "models_url":    None,
+        "key_field":     None,
+        "key_prefix":    None,
+        "default_model": "parakeet-primeline-int8",
+        "models": [("parakeet-primeline (German, int8)", "parakeet-primeline-int8")],
+        "is_local":      True,
     },
 }
 
@@ -80,18 +92,31 @@ KEY_MAP.update({
 })
 
 DEFAULT_CONFIG = {
-    "provider":       DEFAULT_PROVIDER,
-    "api_key":        "",   # Groq key (kept name for backward compat)
-    "openai_api_key": "",   # OpenAI key
-    "mode":           "ptt",
-    "key":            "f9",
-    "model":          DEFAULT_MODEL,
-    "threshold":      0.0,
+    "provider":              DEFAULT_PROVIDER,
+    "api_key":               "",   # Groq key (kept name for backward compat)
+    "openai_api_key":        "",   # OpenAI key
+    "mode":                  "ptt",
+    "key":                   "f9",
+    "model":                 DEFAULT_MODEL,
+    "threshold":             0.0,
+    "local_stt_num_threads": 4,    # sherpa-onnx CPU thread count for parakeet_local
 }
 
 
 def provider_key(cfg):
-    p = PROVIDERS.get(cfg.get("provider", DEFAULT_PROVIDER), PROVIDERS[DEFAULT_PROVIDER])
+    """Return a truthy value iff the selected provider is ready to use.
+
+    HTTP providers need an API key. The local provider is 'ready' when the
+    ONNX model files have been downloaded — no key, no network.
+    """
+    provider = cfg.get("provider", DEFAULT_PROVIDER)
+    p = PROVIDERS.get(provider, PROVIDERS[DEFAULT_PROVIDER])
+    if p.get("is_local"):
+        try:
+            import local_stt
+            return "installed" if local_stt.model_installed() else ""
+        except ImportError:
+            return ""
     return cfg.get(p["key_field"], "")
 
 
@@ -199,7 +224,12 @@ def to_wav_bytes(audio):
 def transcribe(audio, cfg):
     provider = cfg.get("provider", DEFAULT_PROVIDER)
     p = PROVIDERS.get(provider, PROVIDERS[DEFAULT_PROVIDER])
-    key = provider_key(cfg)
+    if p.get("is_local"):
+        import local_stt
+        threads = int(cfg.get("local_stt_num_threads", local_stt.DEFAULT_THREADS))
+        return local_stt.get_recognizer(num_threads=threads).transcribe(audio)
+    # HTTP providers
+    key = cfg.get(p["key_field"], "")
     model = cfg.get("model") or p["default_model"]
     wav = to_wav_bytes(audio)
     files = {"file": ("audio.wav", wav, "audio/wav")}
@@ -212,6 +242,8 @@ def transcribe(audio, cfg):
 
 def test_api_key(api_key, provider=DEFAULT_PROVIDER):
     p = PROVIDERS.get(provider, PROVIDERS[DEFAULT_PROVIDER])
+    if p.get("is_local") or not p.get("models_url"):
+        return False  # no key to test — caller should not have called this
     try:
         r = requests.get(
             p["models_url"],

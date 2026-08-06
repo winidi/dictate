@@ -10,7 +10,8 @@ from PyQt6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QApplication, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
     QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu,
-    QMessageBox, QPushButton, QSystemTrayIcon, QTextEdit, QVBoxLayout, QWidget,
+    QMessageBox, QPushButton, QSpinBox, QSystemTrayIcon, QTextEdit,
+    QVBoxLayout, QWidget,
 )
 from pynput import keyboard
 
@@ -42,13 +43,17 @@ class Bridge(QObject):
 
 
 class SettingsDialog(QDialog):
+    # Bridge signals for the background model-download thread.
+    _dl_status = pyqtSignal(str)
+    _dl_done = pyqtSignal(bool, str)
+
     def __init__(self, cfg, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Dictate — Settings")
-        self.setMinimumWidth(440)
+        self.setMinimumWidth(460)
         self.cfg = dict(cfg)
 
-        form = QFormLayout()
+        self.form = QFormLayout()
 
         # --- Provider selector ---
         self.provider_box = QComboBox()
@@ -57,9 +62,9 @@ class SettingsDialog(QDialog):
         i = self.provider_box.findData(self.cfg.get("provider", core.DEFAULT_PROVIDER))
         self.provider_box.setCurrentIndex(max(i, 0))
         self.provider_box.currentIndexChanged.connect(self.on_provider_changed)
-        form.addRow("Provider:", self.provider_box)
+        self.form.addRow("Provider:", self.provider_box)
 
-        # --- Single API key field (rebound to the active provider's stored key) ---
+        # --- API key row (hidden when a local provider is selected) ---
         self.api_key_edit = QLineEdit()
         self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         show_btn = QPushButton("show")
@@ -74,15 +79,16 @@ class SettingsDialog(QDialog):
         row.setContentsMargins(0, 0, 0, 0)
         row.addWidget(self.api_key_edit)
         row.addWidget(show_btn)
-        wrap = QWidget()
-        wrap.setLayout(row)
+        self.api_key_wrap = QWidget()
+        self.api_key_wrap.setLayout(row)
         self.api_key_label = QLabel()
-        form.addRow(self.api_key_label, wrap)
+        self.form.addRow(self.api_key_label, self.api_key_wrap)
 
-        # Per-provider key cache so switching doesn't wipe the other key.
+        # Per-provider key cache — only providers that actually take a key.
         self._keys = {
             pid: self.cfg.get(pdef["key_field"], "")
             for pid, pdef in core.PROVIDERS.items()
+            if pdef.get("key_field")
         }
 
         self.mode_box = QComboBox()
@@ -90,20 +96,34 @@ class SettingsDialog(QDialog):
         self.mode_box.addItem("Toggle (tap to start, tap to stop)", "toggle")
         i = self.mode_box.findData(self.cfg.get("mode", "ptt"))
         self.mode_box.setCurrentIndex(max(i, 0))
-        form.addRow("Mode:", self.mode_box)
+        self.form.addRow("Mode:", self.mode_box)
 
         self.key_box = QComboBox()
         for k in core.KEY_MAP:
             self.key_box.addItem(k.upper().replace("_", " "), k)
         i = self.key_box.findData(self.cfg.get("key", "f9"))
         self.key_box.setCurrentIndex(max(i, 0))
-        form.addRow("Hotkey:", self.key_box)
+        self.form.addRow("Hotkey:", self.key_box)
 
         self.model_box = QComboBox()
-        form.addRow("Model:", self.model_box)
-        self.refresh_model_box(self.cfg.get("model", core.DEFAULT_MODEL))
-        # sync API-key field + label to the currently-selected provider
-        self.on_provider_changed()
+        self.form.addRow("Model:", self.model_box)
+
+        # --- Local-STT panel (shown only when a local provider is selected) ---
+        import os as _os
+        cpu_max = max(1, _os.cpu_count() or 1)
+        self.local_status_label = QLabel()
+        self.form.addRow("Local model:", self.local_status_label)
+        self.local_download_btn = QPushButton()
+        self.local_download_btn.clicked.connect(self.on_download_model)
+        self.form.addRow("", self.local_download_btn)
+        self.local_threads_box = QSpinBox()
+        self.local_threads_box.setRange(1, cpu_max)
+        self.local_threads_box.setValue(int(self.cfg.get("local_stt_num_threads", min(4, cpu_max))))
+        self.local_threads_box.setToolTip(
+            "sherpa-onnx CPU thread count. 4 = best latency/resource balance on\n"
+            "this system; more brings little. Changing this rebuilds the recognizer."
+        )
+        self.form.addRow("CPU threads:", self.local_threads_box)
 
         self.threshold_box = QDoubleSpinBox()
         self.threshold_box.setRange(0.0, 5.0)
@@ -112,16 +132,16 @@ class SettingsDialog(QDialog):
         self.threshold_box.setSuffix(" s")
         self.threshold_box.setValue(float(self.cfg.get("threshold", 0.0)))
         self.threshold_box.setToolTip(
-            "Recording starts immediately on press; release sends to Groq.\n"
-            "If you release before this duration, the recording is discarded\n"
-            "with no API call. 0 = always send. Recommended ~2.0s when bound\n"
-            "to Ctrl/Alt/Shift so brief taps and shortcuts don't transcribe."
+            "Recording starts immediately on press; release sends for transcription.\n"
+            "If you release before this duration, the recording is discarded. 0 =\n"
+            "always send. Recommended ~2.0s when bound to Ctrl/Alt/Shift so brief\n"
+            "taps and shortcuts don't transcribe."
         )
-        form.addRow("Min hold to send:", self.threshold_box)
+        self.form.addRow("Min hold to send:", self.threshold_box)
 
         self.test_btn = QPushButton("Test API key")
         self.test_btn.clicked.connect(self.on_test)
-        form.addRow("", self.test_btn)
+        self.form.addRow("", self.test_btn)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
@@ -130,25 +150,24 @@ class SettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
-        layout.addLayout(form)
+        layout.addLayout(self.form)
 
-        hint = QLabel(
-            "Get a free Groq API key at <a href='https://console.groq.com'>console.groq.com</a>."
-        )
-        hint.setOpenExternalLinks(True)
-        hint.setStyleSheet("color: #777; padding: 6px 0;")
-        layout.addWidget(hint)
+        self.hint = QLabel()
+        self.hint.setOpenExternalLinks(True)
+        self.hint.setStyleSheet("color: #777; padding: 6px 0;")
+        layout.addWidget(self.hint)
 
         layout.addWidget(buttons)
 
+        # Wire the download-worker bridge, then sync UI to current provider.
+        self._dl_status.connect(self.local_status_label.setText)
+        self._dl_done.connect(self._on_download_done)
+        self.refresh_model_box(self.cfg.get("model", core.DEFAULT_MODEL))
+        self.on_provider_changed()
+
     def on_provider_changed(self):
-        # persist edits to the previously-shown key
-        for pid in self._keys:
-            if pid == self.provider_box.currentData():
-                continue  # will be re-loaded below
-        # Actually: the key we currently see corresponds to whatever was shown
-        # before the switch. Save it back to that slot BEFORE swapping display.
-        # We track "shown provider" via an attribute.
+        # Persist edits to the previously-shown provider's key (if any) before
+        # swapping the display to the newly selected provider.
         prev = getattr(self, "_shown_provider", None)
         if prev is not None and prev in self._keys:
             self._keys[prev] = self.api_key_edit.text().strip()
@@ -156,10 +175,81 @@ class SettingsDialog(QDialog):
         pid = self.provider_box.currentData()
         pdef = core.PROVIDERS[pid]
         self._shown_provider = pid
-        self.api_key_label.setText(f"{pdef['label']} API key:")
-        self.api_key_edit.setText(self._keys.get(pid, ""))
-        self.api_key_edit.setPlaceholderText(f"{pdef['key_prefix']}...")
+        is_local = pdef.get("is_local", False)
+
+        # HTTP-provider widgets
+        if not is_local:
+            self.api_key_label.setText(f"{pdef['label']} API key:")
+            self.api_key_edit.setText(self._keys.get(pid, ""))
+            self.api_key_edit.setPlaceholderText(f"{pdef['key_prefix']}...")
+
+        # Toggle row visibility. QFormLayout.setRowVisible(widget, bool) hides
+        # both the field and its label.
+        self.form.setRowVisible(self.api_key_wrap, not is_local)
+        self.form.setRowVisible(self.model_box, not is_local)
+        self.form.setRowVisible(self.test_btn, not is_local)
+        self.form.setRowVisible(self.local_status_label, is_local)
+        self.form.setRowVisible(self.local_download_btn, is_local)
+        self.form.setRowVisible(self.local_threads_box, is_local)
+
+        # Hint text at the bottom of the dialog.
+        if is_local:
+            self.hint.setText(
+                "Runs entirely offline on your CPU. Model: parakeet-primeline "
+                "(German, ~640 MB, CC-BY-4.0). Attribution: primeline · NVIDIA · "
+                "<a href='https://github.com/k2-fsa/sherpa-onnx'>k2-fsa/sherpa-onnx</a>."
+            )
+        elif pid == "openai":
+            self.hint.setText(
+                "OpenAI key: <a href='https://platform.openai.com/api-keys'>platform.openai.com/api-keys</a>."
+            )
+        else:
+            self.hint.setText(
+                "Get a free Groq API key at <a href='https://console.groq.com'>console.groq.com</a>."
+            )
+
         self.refresh_model_box(pdef["default_model"])
+        if is_local:
+            self._refresh_local_status()
+
+    def _refresh_local_status(self):
+        try:
+            import local_stt
+            installed = local_stt.model_installed()
+        except ImportError:
+            self.local_status_label.setText(
+                "sherpa-onnx not installed — run: pip install --user sherpa-onnx soundfile"
+            )
+            self.local_download_btn.setEnabled(False)
+            self.local_download_btn.setText("Download model (~640 MB)")
+            return
+        if installed:
+            self.local_status_label.setText("Installed and ready.")
+            self.local_download_btn.setEnabled(True)
+            self.local_download_btn.setText("Re-download model")
+        else:
+            self.local_status_label.setText("Not installed.")
+            self.local_download_btn.setEnabled(True)
+            self.local_download_btn.setText("Download model (~640 MB)")
+
+    def on_download_model(self):
+        self.local_download_btn.setEnabled(False)
+        self.local_download_btn.setText("Downloading...")
+        self.local_status_label.setText("Starting download...")
+        threading.Thread(target=self._download_worker, daemon=True).start()
+
+    def _download_worker(self):
+        try:
+            import local_stt
+            local_stt.download_model(progress_cb=lambda m: self._dl_status.emit(m))
+            self._dl_done.emit(True, "Installed.")
+        except Exception as e:
+            self._dl_done.emit(False, f"Download failed: {e}")
+
+    def _on_download_done(self, ok, msg):
+        self.local_status_label.setText(msg)
+        self.local_download_btn.setEnabled(True)
+        self.local_download_btn.setText("Re-download model" if ok else "Retry download")
 
     def refresh_model_box(self, preferred_model):
         pid = self.provider_box.currentData()
@@ -191,17 +281,20 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "Dictate", "API key rejected.")
 
     def values(self):
-        # sync current field back into the per-provider cache first
+        # Sync current field back into the per-provider cache first, but only
+        # if the shown provider actually has a key_field (local providers don't).
         pid = self.provider_box.currentData()
-        self._keys[pid] = self.api_key_edit.text().strip()
+        if pid in self._keys:
+            self._keys[pid] = self.api_key_edit.text().strip()
         return {
-            "provider":       pid,
-            "api_key":        self._keys.get("groq", ""),
-            "openai_api_key": self._keys.get("openai", ""),
-            "mode":           self.mode_box.currentData(),
-            "key":            self.key_box.currentData(),
-            "model":          self.model_box.currentData(),
-            "threshold":      float(self.threshold_box.value()),
+            "provider":              pid,
+            "api_key":               self._keys.get("groq", ""),
+            "openai_api_key":        self._keys.get("openai", ""),
+            "mode":                  self.mode_box.currentData(),
+            "key":                   self.key_box.currentData(),
+            "model":                 self.model_box.currentData(),
+            "threshold":             float(self.threshold_box.value()),
+            "local_stt_num_threads": int(self.local_threads_box.value()),
         }
 
 
@@ -310,16 +403,34 @@ class MainWindow(QMainWindow):
         self.set_status("ready", "Ready")
         self.update_info()
         self.start_listener()
+        self._preload_local_if_needed()
 
         if not core.provider_key(self.cfg):
             QTimer.singleShot(250, self.first_run)
+
+    def _preload_local_if_needed(self):
+        """Kick off the parakeet recognizer load in the background so the first
+        real dictation isn't slowed by the ~0.8s model load + warmup."""
+        provider = self.cfg.get("provider")
+        pdef = core.PROVIDERS.get(provider, {})
+        if not pdef.get("is_local"):
+            return
+        try:
+            import local_stt
+        except ImportError:
+            return
+        if not local_stt.model_installed():
+            return
+        local_stt.preload(int(self.cfg.get("local_stt_num_threads", local_stt.DEFAULT_THREADS)))
 
     def first_run(self):
         QMessageBox.information(
             self,
             "Welcome to Dictate",
-            "Open Settings and paste your Groq API key to start dictating.\n\n"
-            "Get a free key at console.groq.com",
+            "Open Settings to pick a transcription provider:\n\n"
+            "  * Groq (cloud, free tier — console.groq.com)\n"
+            "  * OpenAI (cloud — platform.openai.com)\n"
+            "  * Local (offline, German, CPU — one-time 640 MB download)",
         )
         self.open_settings()
 
@@ -339,6 +450,7 @@ class MainWindow(QMainWindow):
             core.save_config(self.cfg)
             self.restart_listener()
             self.update_info()
+            self._preload_local_if_needed()
 
     def start_listener(self):
         keys = core.KEY_MAP.get(self.cfg["key"])

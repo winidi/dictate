@@ -17,8 +17,12 @@ sudo apt-get install -y \
 
 echo
 echo "[2/4] Installing Python packages..."
+# Core deps: GUI, audio capture, hotkey listener, HTTP client, arrays.
+# Local-STT deps: sherpa-onnx runs Parakeet on CPU offline; soundfile is a
+# common companion; huggingface_hub downloads the model on demand.
 pip install --user --break-system-packages \
-    PyQt6 sounddevice pynput requests numpy
+    PyQt6 sounddevice pynput requests numpy \
+    sherpa-onnx soundfile huggingface_hub
 
 echo
 echo "[3/4] Setting up Wayland/evdev access..."
@@ -59,6 +63,7 @@ echo "Launch:"
 echo "  - From app menu: 'Dictate'"
 echo "  - From shell:    python3 ${SCRIPT_DIR}/gui.py"
 echo
-echo "On first launch: open Settings and paste your API key."
-echo "  - Groq (free tier):  https://console.groq.com"
-echo "  - OpenAI:            https://platform.openai.com/api-keys"
+echo "On first launch: open Settings and pick a provider."
+echo "  - Groq (cloud, free tier):  https://console.groq.com"
+echo "  - OpenAI (cloud):           https://platform.openai.com/api-keys"
+echo "  - Local (offline German):   click 'Download model' in Settings (~640 MB, one-time)"
