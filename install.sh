@@ -12,8 +12,9 @@ sudo apt-get update -qq
 # xdotool: X11 typing fallback
 # ydotool: /dev/uinput typing, works in native Wayland windows
 # python3-evdev: /dev/input/event* reader, works on Wayland where pynput is blind
+# libportaudio2: runtime library for the sounddevice wheel (missing on a fresh Ubuntu desktop)
 sudo apt-get install -y \
-    xdotool ydotool libnotify-bin python3-pip libxcb-cursor0 python3-evdev
+    xdotool ydotool libnotify-bin python3-pip libxcb-cursor0 python3-evdev libportaudio2
 
 echo
 echo "[2/4] Installing Python packages..."

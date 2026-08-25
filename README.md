@@ -34,7 +34,7 @@ cd dictate
 
 The installer adds:
 
-- system packages: `xdotool`, `ydotool`, `python3-evdev`, `libnotify-bin`, `python3-pip`, `libxcb-cursor0`
+- system packages: `xdotool`, `ydotool`, `python3-evdev`, `libnotify-bin`, `python3-pip`, `libxcb-cursor0`, `libportaudio2`
 - Python packages: `PyQt6`, `sounddevice`, `pynput`, `requests`, `numpy`, `sherpa-onnx`, `soundfile`, `huggingface_hub`
 - membership in group `input` (needed for evdev on Wayland)
 - a desktop entry so **Dictate** shows up in your app menu
