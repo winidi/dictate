@@ -74,16 +74,16 @@ or pick an input in GNOME Sound Settings. The bug will silently return if the us
 
 ## Bonus gotcha — `systemd --user` linger defeats logout
 
-The `input` group membership added by `usermod -a -G input isee` did not appear in the user's shells even after a full GDM logout / login. `id` in a fresh terminal did NOT show group 995 (input); `getent group input` did. The reason:
+The `input` group membership added by `usermod -a -G input $USER` did not appear in the user's shells even after a full GDM logout / login. `id` in a fresh terminal did NOT show group 995 (input); `getent group input` did. The reason:
 
 ```
-loginctl show-user isee -p Linger
+loginctl show-user $USER -p Linger
 Linger=yes
 ```
 
 With linger on, `user@1000.service` (the systemd --user manager, and everything it spawns — `gnome-terminal-server`, `mutter`, ...) keeps running past logout. On next login GDM re-attaches to the existing user-manager, so freshly launched processes inherit the old process credentials.
 
-**Fix:** `loginctl disable-linger isee` followed by logout / login, or just reboot. Alternatively `sg input -c 'python3 gui.py'` runs the command with the correct primary group without needing a session restart.
+**Fix:** `loginctl disable-linger $USER` followed by logout / login, or just reboot. Alternatively `sg input -c 'python3 gui.py'` runs the command with the correct primary group without needing a session restart.
 
 ## Diagnosis order for future breakage
 
@@ -108,7 +108,7 @@ ydotool type "typed by ydotool"
 # should appear in whatever window has focus
 
 # 5. Is Dictate using evdev?
-grep -q "keyboard listener: evdev" <(python3 /home/isee/dictate/gui.py 2>&1)
+grep -q "keyboard listener: evdev" <(python3 ~/dictate/gui.py 2>&1)
 ```
 
 If all five pass and Dictate still misbehaves, something newer than 2026-08-02 broke it — grep this file for the debug prints (`[dbg]`) shown above and re-add them to see where the pipeline stops.
