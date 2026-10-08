@@ -58,9 +58,12 @@ class SettingsDialog(QDialog):
 
         # --- Provider selector ---
         self.provider_box = QComboBox()
-        for pid, pdef in core.PROVIDERS.items():
-            self.provider_box.addItem(pdef["label"], pid)
-        i = self.provider_box.findData(self.cfg.get("provider", core.DEFAULT_PROVIDER))
+        # Local model first, the cloud and server providers follow marked "Optional".
+        ordered = sorted(core.PROVIDERS.items(), key=lambda kv: not kv[1].get("is_local"))
+        for pid, pdef in ordered:
+            label = pdef["label"] if pdef.get("is_local") else "Optional: " + pdef["label"]
+            self.provider_box.addItem(label, pid)
+        i = self.provider_box.findData(self.cfg.get("provider", core.FRESH_PROVIDER))
         self.provider_box.setCurrentIndex(max(i, 0))
         self.provider_box.currentIndexChanged.connect(self.on_provider_changed)
         self.form.addRow("Provider:", self.provider_box)
@@ -438,10 +441,11 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "Welcome to Dictate",
-            "Open Settings to pick a transcription provider:\n\n"
-            "  * Groq (cloud, free tier — console.groq.com)\n"
-            "  * OpenAI (cloud — platform.openai.com)\n"
-            "  * Local (offline, German, CPU — one-time 640 MB download)",
+            "Open Settings to set up transcription:\n\n"
+            "  * Local (offline, German, CPU — one-time 640 MB download) is preselected\n"
+            "  * Optional: Groq (cloud, free tier — console.groq.com)\n"
+            "  * Optional: OpenAI (cloud — platform.openai.com)\n"
+            "  * Optional: Yorik (home server)",
         )
         self.open_settings()
 

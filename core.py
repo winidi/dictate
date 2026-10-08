@@ -118,13 +118,17 @@ KEY_MAP.update({
     "mouse_task":    {("mouse", "task")},
 })
 
+# A fresh install starts on the offline model. DEFAULT_PROVIDER stays "groq"
+# because older configs without a "provider" key were Groq-only (see load_config).
+FRESH_PROVIDER = "parakeet_local"
+
 DEFAULT_CONFIG = {
-    "provider":              DEFAULT_PROVIDER,
+    "provider":              FRESH_PROVIDER,
     "api_key":               "",   # Groq key (kept name for backward compat)
     "openai_api_key":        "",   # OpenAI key
     "mode":                  "ptt",
     "key":                   "f9",
-    "model":                 DEFAULT_MODEL,
+    "model":                 PROVIDERS[FRESH_PROVIDER]["default_model"],
     "threshold":             0.0,
     "local_stt_num_threads": 4,    # sherpa-onnx CPU thread count for parakeet_local
     "yorik_url":             "http://127.0.0.1:8000",  # Yorik base URL (provider "yorik")
@@ -162,7 +166,12 @@ def load_config():
     cfg = dict(DEFAULT_CONFIG)
     if CONFIG_PATH.exists():
         try:
-            cfg.update(json.loads(CONFIG_PATH.read_text()))
+            saved = json.loads(CONFIG_PATH.read_text())
+            if "provider" not in saved:
+                # Configs from before providers existed were Groq-only. Keep them on Groq.
+                saved["provider"] = DEFAULT_PROVIDER
+                saved.setdefault("model", DEFAULT_MODEL)
+            cfg.update(saved)
         except Exception:
             pass
     return cfg
