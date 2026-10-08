@@ -45,6 +45,22 @@ The Parakeet ONNX model itself (~640 MB) is *not* downloaded by `install.sh` —
 
 If the installer added you to the `input` group you must log out and back in for it to take effect (or reboot — see WAYLAND_NOTES.md for the `systemd-linger` gotcha that can defeat a plain logout).
 
+## Windows install
+
+Two ways, both per user, no admin rights needed:
+
+**A. Install script** (from a clone or an unzipped copy of the repo):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+It finds Python 3.10+ (installs 3.12 with `winget` if missing), creates a virtual environment in `%LOCALAPPDATA%\Programs\Dictate`, installs all packages, adds a Start Menu shortcut, and registers an uninstall entry. At the end it asks whether to download the ~640 MB offline model now and shows a progress bar. Options: `-Autostart` (start at sign-in), `-DownloadModel` (say yes without the question), `-NoModel` (say no), `-Proxy http://host:port`, `-InstallDir <path>`.
+
+**B. Setup.exe** — build it once with `powershell -ExecutionPolicy Bypass -File .\build-setup.ps1 -Version 1.0.0`. This writes `dist\Dictate-Setup-1.0.0.zip`. Give the zip to users. They unzip it and double-click `setup.exe`. It runs `install.ps1` with the defaults. The build uses IExpress, which ships with Windows. The exe is not code-signed, so SmartScreen can warn.
+
+Remove Dictate under Settings > Apps > Installed apps, or run `uninstall.ps1` (add `-RemoveUserData` to also delete settings and the model).
+
 ## First run
 
 Launch **Dictate** from the app menu (or `python3 gui.py`). On first launch you will be prompted to pick a provider and paste an API key.

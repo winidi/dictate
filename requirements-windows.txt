@@ -1,0 +1,8 @@
+PyQt6
+sounddevice
+pynput
+requests
+numpy
+sherpa-onnx
+soundfile
+huggingface_hub
