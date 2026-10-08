@@ -126,6 +126,9 @@ DEFAULT_CONFIG = {
     "key":                   "f9",
     "model":                 DEFAULT_MODEL,
     "threshold":             0.0,
+    "paste_shortcut":        "ctrl+v",  # Wayland; terminals may need ctrl+shift+v
+    "insertion_mode":        "type",  # clipboard paste is an explicit opt-in
+    "typing_layout":         "auto",  # XKB layout override, e.g. at or de(nodeadkeys)
     "local_stt_num_threads": 4,    # sherpa-onnx CPU thread count for parakeet_local
     "yorik_url":             "http://127.0.0.1:8000",  # Yorik base URL (provider "yorik")
     "yorik_token":           "",   # personal API token from Yorik Settings → API tokens
@@ -187,15 +190,81 @@ def notify(msg, urgency="normal", timeout_ms=1500):
         pass
 
 
-def type_text(text):
+_WAYLAND_INSERT_LOCK = threading.Lock()
+
+
+def _ydotool_key_style():
+    # ydotool 0.x (Ubuntu 24.04) takes symbolic combinations; 1.x (Arch)
+    # takes press/release keycodes. Probe before changing the clipboard:
+    # 1.x also fails here if its required daemon is not running.
+    help_result = subprocess.run(
+        ["ydotool", "key", "--help"], stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, timeout=10,
+    )
+    help_text = help_result.stdout.lower()
+    if help_result.returncode == 0 and b"keycode" in help_text:
+        return "keycodes"
+    if b"separated by plus" in help_text:
+        return "symbolic"
+    raise RuntimeError("ydotool unavailable — check its daemon and /dev/uinput access")
+
+
+def _paste_wayland(text, shortcut):
+    """Optional clipboard mode for text a keyboard layout cannot represent."""
+    keys = {
+        "ctrl+v": [29, 47],
+        "ctrl+shift+v": [29, 42, 47],
+    }
+    if shortcut not in keys:
+        raise ValueError("Unknown paste shortcut — select one in Settings")
+    if _ydotool_key_style() == "keycodes":
+        codes = keys[shortcut]
+        events = [f"{code}:1" for code in codes]
+        events += [f"{code}:0" for code in reversed(codes)]
+        paste = ["ydotool", "key", "--key-delay", "20", *events]
+    else:
+        paste = ["ydotool", "key", "--key-delay", "20", shortcut]
+
+    subprocess.run(
+        ["wl-copy", "--type", "text/plain;charset=utf-8"],
+        input=text.encode("utf-8"), check=True, timeout=10,
+        stderr=subprocess.DEVNULL,
+    )
+    subprocess.run(paste, check=True, timeout=10, stderr=subprocess.DEVNULL)
+
+
+def _type_wayland(text, layout):
+    from wayland_typing import key_chords
+
+    style = _ydotool_key_style()
+    chords = key_chords(text, layout)
+    if style == "symbolic":
+        # ydotool 0.x names physical keys using their US labels, even when
+        # the compositor assigns a different symbol. Alt_R is the AltGr key.
+        names = {15: "Tab", 28: "Enter", 42: "Shift", 100: "Alt_R",
+                 41: "`", 43: "\\", 57: " "}
+        for start, row in ((2, "1234567890-="), (16, "qwertyuiop[]"),
+                           (30, "asdfghjkl;'"), (44, "zxcvbnm,./")):
+            names.update({start + i: key for i, key in enumerate(row)})
+        if any(code not in names for chord in chords for code in chord):
+            raise RuntimeError("This text needs keycodes unsupported by ydotool 0.x — upgrade ydotool or select Clipboard paste")
+        sequences = ["+".join(names[code] for code in chord) for chord in chords]
+    else:
+        sequences = [[*(f"{code}:1" for code in chord),
+                      *(f"{code}:0" for code in reversed(chord))] for chord in chords]
+
+    # Bound argv size for long dictations. Every character has its own
+    # press/release sequence; no paste shortcut or clipboard is involved.
+    for start in range(0, len(sequences), 128):
+        batch = sequences[start:start + 128]
+        args = batch if style == "symbolic" else [event for sequence in batch for event in sequence]
+        subprocess.run(["ydotool", "key", "--key-delay", "2", "--", *args],
+                       check=True, timeout=10, stderr=subprocess.DEVNULL)
+
+
+def type_text(text, paste_shortcut="ctrl+v", insertion_mode="type", typing_layout="auto"):
     if not text:
         return
-    # xdotool respects the active XKB layout (correct German umlauts, no y/z
-    # swap on QWERTZ). Prefer it on X11 where it actually works. On Wayland,
-    # native windows ignore XTEST so we must fall back to ydotool, which
-    # writes raw US-QWERTY scancodes via /dev/uinput — layout-agnostic and
-    # therefore wrong for non-US keyboards, but there is no better option
-    # for global typing into native Wayland windows today.
     import os
     if os.name == "nt" or sys.platform == "darwin":
         # Windows / macOS: no xdotool or ydotool; pynput types through the
@@ -203,23 +272,34 @@ def type_text(text):
         keyboard.Controller().type(text)
         return
     on_x11 = os.environ.get("XDG_SESSION_TYPE") == "x11"
-    tools = ["xdotool", "ydotool"] if on_x11 else ["ydotool", "xdotool"]
-    for tool in tools:
-        try:
-            if tool == "xdotool":
-                r = subprocess.run(["xdotool", "type", "--delay", "0", "--", text], check=False)
-            else:
-                r = subprocess.run(
-                    ["ydotool", "type", "--key-delay", "0", "--", text],
-                    check=False,
-                    stderr=subprocess.DEVNULL,
-                )
-            if r.returncode != 0:
-                log.error("%s exited with %s — text not typed", tool, r.returncode)
-                notify(f"Typing failed ({tool} exit {r.returncode})", urgency="critical", timeout_ms=5000)
+    on_wayland = os.environ.get("XDG_SESSION_TYPE") == "wayland" or bool(os.environ.get("WAYLAND_DISPLAY"))
+    try:
+        # X11's xdotool respects XKB. Wayland types individual key events
+        # matched to XKB; clipboard paste is only used when explicitly chosen.
+        if on_wayland and not on_x11:
+            with _WAYLAND_INSERT_LOCK:
+                if insertion_mode == "type":
+                    _type_wayland(text, typing_layout)
+                elif insertion_mode == "paste":
+                    _paste_wayland(text, paste_shortcut)
+                else:
+                    raise ValueError("Unknown insertion mode — select one in Settings")
             return
-        except FileNotFoundError:
-            continue
+        subprocess.run(["xdotool", "type", "--delay", "0", "--", text],
+                       check=True, timeout=30)
+    except FileNotFoundError as e:
+        log.error("typing tool missing: %s", e.filename)
+        notify(f"Typing failed: install {e.filename}", urgency="critical", timeout_ms=5000)
+    except subprocess.CalledProcessError as e:
+        tool = e.cmd[0]
+        log.error("%s exited with %s — text not inserted", tool, e.returncode)
+        notify(f"Typing failed ({tool} exit {e.returncode})", urgency="critical", timeout_ms=5000)
+    except (subprocess.TimeoutExpired, RuntimeError, ValueError) as e:
+        # Do not log TimeoutExpired/CalledProcessError verbatim: their command
+        # may contain the transcription on X11.
+        message = "Typing timed out" if isinstance(e, subprocess.TimeoutExpired) else str(e)
+        log.error("%s", message)
+        notify(message, urgency="critical", timeout_ms=5000)
 
 
 class Recorder:

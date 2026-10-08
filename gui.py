@@ -111,6 +111,38 @@ class SettingsDialog(QDialog):
         self.key_box.setCurrentIndex(max(i, 0))
         self.form.addRow("Hotkey:", self.key_box)
 
+        self.insertion_box = QComboBox()
+        self.insertion_box.addItem("Type character by character", "type")
+        self.insertion_box.addItem("Clipboard paste", "paste")
+        i = self.insertion_box.findData(self.cfg.get("insertion_mode", "type"))
+        self.insertion_box.setCurrentIndex(max(i, 0))
+        self.insertion_box.setToolTip(
+            "Character typing sends layout-aware key events and keeps the clipboard intact.\n"
+            "Clipboard paste inserts the whole text at once and replaces the clipboard."
+        )
+        self.form.addRow("Wayland insertion:", self.insertion_box)
+
+        self.typing_layout_edit = QLineEdit(self.cfg.get("typing_layout", "auto"))
+        self.typing_layout_edit.setToolTip(
+            "auto reads the current XWayland keymap, then the system's XKB configuration.\n"
+            "Override if your desktop uses a different layout: at, de, de(nodeadkeys), us, etc.\n"
+            "The selected layout must match the ydotool virtual keyboard's layout."
+        )
+        self.form.addRow("Typing layout:", self.typing_layout_edit)
+
+        self.paste_box = QComboBox()
+        self.paste_box.addItem("Ctrl+V (most apps)", "ctrl+v")
+        self.paste_box.addItem("Ctrl+Shift+V (terminals)", "ctrl+shift+v")
+        i = self.paste_box.findData(self.cfg.get("paste_shortcut", "ctrl+v"))
+        self.paste_box.setCurrentIndex(max(i, 0))
+        self.paste_box.setToolTip(
+            "Only used in Clipboard paste mode. The transcription remains on the clipboard.\n"
+            "Some terminals interpret Ctrl+V as paste image; use Ctrl+Shift+V if needed."
+        )
+        self.form.addRow("Wayland paste:", self.paste_box)
+        self.insertion_box.currentIndexChanged.connect(self._update_insertion_controls)
+        self._update_insertion_controls()
+
         self.model_box = QComboBox()
         self.form.addRow("Model:", self.model_box)
 
@@ -160,7 +192,7 @@ class SettingsDialog(QDialog):
 
         self.hint = QLabel()
         self.hint.setOpenExternalLinks(True)
-        self.hint.setStyleSheet("color: #777; padding: 6px 0;")
+        self.hint.setStyleSheet("padding: 6px 0;")
         layout.addWidget(self.hint)
 
         layout.addWidget(buttons)
@@ -170,6 +202,11 @@ class SettingsDialog(QDialog):
         self._dl_done.connect(self._on_download_done)
         self.refresh_model_box(self.cfg.get("model", core.DEFAULT_MODEL))
         self.on_provider_changed()
+
+    def _update_insertion_controls(self):
+        typing = self.insertion_box.currentData() == "type"
+        self.typing_layout_edit.setEnabled(typing)
+        self.paste_box.setEnabled(not typing)
 
     def on_provider_changed(self):
         # Persist edits to the previously-shown provider's key (if any) before
@@ -300,6 +337,9 @@ class SettingsDialog(QDialog):
             "openai_api_key":        self._keys.get("openai", ""),
             "mode":                  self.mode_box.currentData(),
             "key":                   self.key_box.currentData(),
+            "paste_shortcut":        self.paste_box.currentData(),
+            "insertion_mode":        self.insertion_box.currentData(),
+            "typing_layout":         self.typing_layout_edit.text().strip() or "auto",
             "model":                 self.model_box.currentData(),
             "threshold":             float(self.threshold_box.value()),
             "local_stt_num_threads": int(self.local_threads_box.value()),
@@ -381,7 +421,7 @@ class MainWindow(QMainWindow):
         v.addWidget(self.status_label)
 
         self.info_label = QLabel()
-        self.info_label.setStyleSheet("color: #666; padding: 2px 0;")
+        self.info_label.setStyleSheet("padding: 2px 0;")
         v.addWidget(self.info_label)
 
         v.addWidget(QLabel("Last transcription:"))
@@ -389,7 +429,7 @@ class MainWindow(QMainWindow):
         self.last.setReadOnly(True)
         self.last.setMaximumHeight(110)
         self.last.setStyleSheet(
-            "QTextEdit { background: #fafafa; border: 1px solid #ddd; border-radius: 6px; padding: 6px; }"
+            "QTextEdit { padding: 6px; }"
         )
         v.addWidget(self.last)
 
@@ -612,7 +652,11 @@ class MainWindow(QMainWindow):
 
     def on_transcribed(self, text):
         if text:
-            threading.Thread(target=core.type_text, args=(text,), daemon=True).start()
+            threading.Thread(target=core.type_text,
+                             args=(text, self.cfg.get("paste_shortcut", "ctrl+v"),
+                                   self.cfg.get("insertion_mode", "type"),
+                                   self.cfg.get("typing_layout", "auto")),
+                             daemon=True).start()
             self.last.setPlainText(text)
         self.set_status("ready", "Ready")
 
