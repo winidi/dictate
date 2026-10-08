@@ -203,11 +203,18 @@ def type_text(text):
         keyboard.Controller().type(text)
         return
     on_x11 = os.environ.get("XDG_SESSION_TYPE") == "x11"
-    tools = ["xdotool", "ydotool"] if on_x11 else ["ydotool", "xdotool"]
+    # wtype (Wayland virtual-keyboard protocol) follows the active layout and
+    # types umlauts correctly; it only works on compositors that implement the
+    # protocol (not GNOME), so ydotool stays as the fallback.
+    tools = ["xdotool", "ydotool"] if on_x11 else ["wtype", "ydotool", "xdotool"]
     for tool in tools:
         try:
             if tool == "xdotool":
                 r = subprocess.run(["xdotool", "type", "--delay", "0", "--", text], check=False)
+            elif tool == "wtype":
+                r = subprocess.run(["wtype", "--", text], check=False)
+                if r.returncode != 0:
+                    continue
             else:
                 r = subprocess.run(
                     ["ydotool", "type", "--key-delay", "0", "--", text],

@@ -36,7 +36,8 @@ cd dictate
 
 The installer adds:
 
-- system packages: `xdotool`, `ydotool`, `python3-evdev`, `libnotify-bin`, `python3-pip`, `libxcb-cursor0`, `libportaudio2`
+- Arch/CachyOS (pacman) and Debian/Ubuntu (apt) are supported; the installer auto-detects, or pass `--distro=arch|debian`
+- system packages: `xdotool`, `wtype`, `ydotool`, `python3-evdev`, `libnotify-bin`, `python3-pip`, `libxcb-cursor0`, `libportaudio2`
 - Python packages: `PyQt6`, `sounddevice`, `pynput`, `requests`, `numpy`, `sherpa-onnx`, `soundfile`, `huggingface_hub`
 - membership in group `input` (needed for evdev on Wayland)
 - a desktop entry so **Dictate** shows up in your app menu
@@ -72,7 +73,7 @@ Attribution (CC-BY-4.0): [primeline](https://huggingface.co/flozen1981/parakeet-
 
 ## Wayland notes
 
-On Wayland (GNOME Mutter in particular) the compositor does not forward global key events to XWayland, so `pynput`'s X-based listener sees nothing. Dictate works around this by reading `/dev/input/event*` directly via `evdev`. The `install.sh` script sets this up. Typing likewise uses `ydotool` (via `/dev/uinput`) because `xdotool` cannot type into native Wayland windows.
+On Wayland (GNOME Mutter in particular) the compositor does not forward global key events to XWayland, so `pynput`'s X-based listener sees nothing. Dictate works around this by reading `/dev/input/event*` directly via `evdev`. The `install.sh` script sets this up. Typing uses `wtype` first (follows the keyboard layout, needs a compositor with the virtual-keyboard protocol, i.e. not GNOME), then `ydotool` (via `/dev/uinput`, US layout only) because `xdotool` cannot type into native Wayland windows.
 
 If a hotkey silently does nothing after install, the two things to check are:
 
@@ -99,7 +100,7 @@ If a hotkey silently does nothing after install, the two things to check are:
 
 **Text is transcribed (visible in the "Last transcription" pane) but nothing appears in your target window**
 
-- `ydotool` is missing or `/dev/uinput` is not writable. Reinstall with `sudo apt install ydotool` and confirm `python3 -c 'import os; os.open("/dev/uinput", os.O_WRONLY)'` succeeds. On systemd systems membership in `input` should be enough
+- `ydotool` is missing or `/dev/uinput` is not writable. Reinstall with `sudo apt install ydotool` (Arch: `sudo pacman -S ydotool`) and confirm `python3 -c 'import os; os.open("/dev/uinput", os.O_WRONLY)'` succeeds. On systemd systems membership in `input` should be enough. ydotool 1.x (Arch) additionally needs its daemon: `systemctl --user enable --now ydotool.service`. If `y` and `z` come out swapped, `ydotool` is typing on a non-US layout; install `wtype`
 
 **GUI freezes for a few seconds when releasing the hotkey**
 
