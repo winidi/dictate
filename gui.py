@@ -11,12 +11,14 @@ from PyQt6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QApplication, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
     QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu,
-    QMessageBox, QPushButton, QSpinBox, QSystemTrayIcon, QTextEdit,
-    QVBoxLayout, QWidget,
+    QMessageBox, QProgressBar, QPushButton, QSpinBox, QSystemTrayIcon,
+    QTextEdit, QVBoxLayout, QWidget,
 )
 from pynput import keyboard
 
 import core
+
+DL_BAR_STEPS = 1000   # progress bar resolution (0.1 %)
 
 
 def _make_listener(on_press, on_release):
@@ -46,6 +48,7 @@ class Bridge(QObject):
 class SettingsDialog(QDialog):
     # Bridge signals for the background model-download thread.
     _dl_status = pyqtSignal(str)
+    _dl_progress = pyqtSignal(object)   # local_stt.DownloadProgress
     _dl_done = pyqtSignal(bool, str)
 
     def __init__(self, cfg, parent=None):
@@ -122,6 +125,17 @@ class SettingsDialog(QDialog):
         self.local_download_btn = QPushButton()
         self.local_download_btn.clicked.connect(self.on_download_model)
         self.form.addRow("", self.local_download_btn)
+        self._downloading = False
+        self._dl_text = ""            # status line without the stall notice
+        self._dl_last_data = 0.0      # when data last arrived
+        # Re-checks once a second: progress only arrives with data, so a stalled
+        # connection would otherwise leave the last ETA on screen.
+        self._dl_timer = QTimer(self)
+        self._dl_timer.setInterval(1000)
+        self._dl_timer.timeout.connect(self._tick_download)
+        self.local_progress_bar = QProgressBar()
+        self.local_progress_bar.setRange(0, DL_BAR_STEPS)
+        self.form.addRow("", self.local_progress_bar)
         self.local_threads_box = QSpinBox()
         self.local_threads_box.setRange(1, cpu_max)
         self.local_threads_box.setValue(int(self.cfg.get("local_stt_num_threads", min(4, cpu_max))))
@@ -166,7 +180,8 @@ class SettingsDialog(QDialog):
         layout.addWidget(buttons)
 
         # Wire the download-worker bridge, then sync UI to current provider.
-        self._dl_status.connect(self.local_status_label.setText)
+        self._dl_status.connect(self._on_download_status)
+        self._dl_progress.connect(self._on_download_progress)
         self._dl_done.connect(self._on_download_done)
         self.refresh_model_box(self.cfg.get("model", core.DEFAULT_MODEL))
         self.on_provider_changed()
@@ -197,6 +212,7 @@ class SettingsDialog(QDialog):
         self.form.setRowVisible(self.test_btn, not is_local)
         self.form.setRowVisible(self.local_status_label, is_local)
         self.form.setRowVisible(self.local_download_btn, is_local)
+        self.form.setRowVisible(self.local_progress_bar, is_local and self._downloading)
         self.form.setRowVisible(self.local_threads_box, is_local)
 
         # Hint text at the bottom of the dialog.
@@ -242,18 +258,56 @@ class SettingsDialog(QDialog):
     def on_download_model(self):
         self.local_download_btn.setEnabled(False)
         self.local_download_btn.setText("Downloading...")
-        self.local_status_label.setText("Starting download...")
+        self._show_download_text("Starting download...")
+        # Range 0..0 makes the bar a busy indicator until the first byte count arrives.
+        self.local_progress_bar.setRange(0, 0)
+        self._set_downloading(True)
         threading.Thread(target=self._download_worker, daemon=True).start()
+
+    def _set_downloading(self, downloading):
+        self._downloading = downloading
+        self.form.setRowVisible(self.local_progress_bar, downloading)
+        if downloading:
+            self._dl_last_data = time.monotonic()
+            self._dl_timer.start()
+        else:
+            self._dl_timer.stop()
+
+    def _show_download_text(self, text):
+        self._dl_text = text
+        self._dl_last_data = time.monotonic()
+        self.local_status_label.setText(text)
+
+    def _tick_download(self, now=None):
+        import local_stt
+        idle = (time.monotonic() if now is None else now) - self._dl_last_data
+        self.local_status_label.setText(self._dl_text + local_stt.stall_notice(idle))
+
+    def _on_download_status(self, text):
+        self._show_download_text(text)
 
     def _download_worker(self):
         try:
             import local_stt
-            local_stt.download_model(progress_cb=lambda m: self._dl_status.emit(m))
+            local_stt.download_model(
+                progress_cb=lambda m: self._dl_status.emit(m),
+                on_progress=lambda p: self._dl_progress.emit(p),
+            )
             self._dl_done.emit(True, "Installed.")
         except Exception as e:
             self._dl_done.emit(False, f"Download failed: {e}")
 
+    def _on_download_progress(self, p):
+        import local_stt
+        if p.total > 0:
+            self.local_progress_bar.setRange(0, DL_BAR_STEPS)
+            self.local_progress_bar.setValue(min(DL_BAR_STEPS, p.done * DL_BAR_STEPS // p.total))
+        self._show_download_text(local_stt.format_progress(p))
+
     def _on_download_done(self, ok, msg):
+        self._set_downloading(False)
+        self.local_progress_bar.setRange(0, DL_BAR_STEPS)
+        self._dl_text = msg
         self.local_status_label.setText(msg)
         self.local_download_btn.setEnabled(True)
         self.local_download_btn.setText("Re-download model" if ok else "Retry download")
