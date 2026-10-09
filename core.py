@@ -188,8 +188,9 @@ def notify(msg, urgency="normal", timeout_ms=1500):
 
 
 def type_text(text):
+    """Type text into the focused window. True when it was typed, False when not."""
     if not text:
-        return
+        return True
     # xdotool respects the active XKB layout (correct German umlauts, no y/z
     # swap on QWERTZ). Prefer it on X11 where it actually works. On Wayland,
     # native windows ignore XTEST so we must fall back to ydotool, which
@@ -201,7 +202,7 @@ def type_text(text):
         # Windows / macOS: no xdotool or ydotool; pynput types through the
         # OS input API and respects the active keyboard layout.
         keyboard.Controller().type(text)
-        return
+        return True
     on_x11 = os.environ.get("XDG_SESSION_TYPE") == "x11"
     tools = ["xdotool", "ydotool"] if on_x11 else ["ydotool", "xdotool"]
     for tool in tools:
@@ -217,9 +218,13 @@ def type_text(text):
             if r.returncode != 0:
                 log.error("%s exited with %s — text not typed", tool, r.returncode)
                 notify(f"Typing failed ({tool} exit {r.returncode})", urgency="critical", timeout_ms=5000)
-            return
+                return False
+            return True
         except FileNotFoundError:
             continue
+    log.error("no typing tool found (xdotool, ydotool) — text not typed")
+    notify("Typing failed: neither xdotool nor ydotool is installed", urgency="critical", timeout_ms=5000)
+    return False
 
 
 class Recorder:
@@ -292,23 +297,72 @@ def to_wav_bytes(audio):
     return buf
 
 
-FAILED_DIR = LOG_PATH.parent / "failed"
-FAILED_KEEP = 3
+PENDING_DIR = LOG_PATH.parent / "pending"
+PENDING_KEEP = 30                    # at most this many saved recordings
+PENDING_MAX_AGE_S = 14 * 86400       # and none older than two weeks
 
 
-def keep_failed_audio(audio):
-    """Save a recording that held sound but came back empty, so the failure
-    can be replayed. Only the newest FAILED_KEEP files are kept."""
+def save_pending(audio):
+    """Write a recording to disk before it is transcribed, so an error, a crash or
+    a power cut cannot lose it. It is deleted only once its text was typed
+    (discard_pending). Returns the path, or None when it could not be written."""
+    import time
     try:
-        import time
-        FAILED_DIR.mkdir(parents=True, exist_ok=True)
-        path = FAILED_DIR / time.strftime("%Y%m%d-%H%M%S.wav")
-        path.write_bytes(to_wav_bytes(audio).getvalue())
-        for old in sorted(FAILED_DIR.glob("*.wav"))[:-FAILED_KEEP]:
-            old.unlink()
-        log.info("kept failed recording as %s", path)
+        PENDING_DIR.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        stem = f"{time.strftime('%Y%m%d-%H%M%S', time.localtime(now))}-{int(now * 1000) % 1000:03d}"
+        path = PENDING_DIR / f"{stem}.wav"
+        for n in range(1, 100):      # same millisecond twice: never overwrite, keep the order
+            if not path.exists():
+                break
+            path = PENDING_DIR / f"{stem}{n:02d}.wav"
+        part = path.with_suffix(".part")
+        part.write_bytes(to_wav_bytes(audio).getvalue())
+        part.replace(path)           # never a half-written .wav
+        prune_pending()
+        return path
     except Exception:
-        log.exception("could not keep failed recording")
+        log.exception("could not save the recording")
+        return None
+
+
+def list_pending():
+    """Saved recordings that still wait for a successful transcription, newest first."""
+    if not PENDING_DIR.exists():
+        return []
+    return sorted(PENDING_DIR.glob("*.wav"), reverse=True)
+
+
+def load_pending(path):
+    """Read a saved recording back as int16 audio of shape (N, 1)."""
+    with wave.open(str(path), "rb") as wf:
+        frames = wf.readframes(wf.getnframes())
+        return np.frombuffer(frames, dtype=np.int16).reshape(-1, wf.getnchannels())
+
+
+def discard_pending(path):
+    try:
+        Path(path).unlink()
+    except FileNotFoundError:
+        pass
+    except Exception:
+        log.exception("could not delete %s", path)
+
+
+def prune_pending(now=None):
+    """Keep the disk tidy: drop recordings beyond PENDING_KEEP and older than PENDING_MAX_AGE_S."""
+    import time
+    now = time.time() if now is None else now
+    for i, path in enumerate(list_pending()):
+        try:
+            too_old = now - path.stat().st_mtime > PENDING_MAX_AGE_S
+            if i >= PENDING_KEEP or too_old:
+                path.unlink()
+                log.info("removed old saved recording %s", path.name)
+        except FileNotFoundError:
+            pass
+        except Exception:
+            log.exception("could not prune %s", path)
 
 
 def transcribe(audio, cfg):

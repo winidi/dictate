@@ -85,7 +85,7 @@ If a hotkey silently does nothing after install, the two things to check are:
 
 - Every recording leaves one line in `~/.local/state/dictate/dictate.log` (length, peak level, characters, decode time — never the text). A failed one also raises a desktop notification: no audio frames, silent microphone (`peak` under 300 of 32768), nothing recognised, recording cancelled by another key or mouse button while the hotkey was held, or typing failed
 - The local Parakeet model cannot take more than 400 s in one pass; recordings over 90 s are split at a pause and decoded in pieces. Quiet audio is raised in level before decoding, and a piece that still comes back empty is retried in 20 s parts
-- A recording that had sound but produced no text is saved as a WAV in `~/.local/state/dictate/failed/`, so the failure can be replayed. This is your own voice on disk: only the newest 3 are kept, nothing is uploaded, and you can delete the folder at any time
+- Every recording with sound is saved as a WAV in `~/.local/state/dictate/pending/` before it is transcribed, and deleted as soon as its text was typed. If transcription or typing fails (an error, or nothing recognised), the file stays and the window and the tray menu show **Retry transcription**; recordings left over from an earlier run are offered at start. This is your own voice on disk: at most 30 files and none older than 14 days are kept, nothing is uploaded, and you can delete the folder at any time
 
 **Hotkey does nothing / status never changes to "Recording..."**
 

@@ -4,6 +4,7 @@ import fcntl
 import sys
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 from PyQt6.QtCore import Qt, QObject, QTimer, pyqtSignal
@@ -17,6 +18,8 @@ from PyQt6.QtWidgets import (
 from pynput import keyboard
 
 import core
+
+SILENT_PEAK = 300   # out of 32768; a recording below this is silence, with speech it is in the thousands
 
 
 def _make_listener(on_press, on_release):
@@ -39,8 +42,9 @@ class Bridge(QObject):
     hotkey_press = pyqtSignal()
     hotkey_release = pyqtSignal()
     other_press = pyqtSignal()
-    transcribed = pyqtSignal(str)
+    transcribed = pyqtSignal(str, str)   # text, path of the saved recording ("" if none)
     error = pyqtSignal(str)
+    pending_changed = pyqtSignal()       # the set of saved recordings changed
 
 
 class SettingsDialog(QDialog):
@@ -351,6 +355,9 @@ class MainWindow(QMainWindow):
         self.bridge.other_press.connect(self.on_other_press)
         self.bridge.transcribed.connect(self.on_transcribed)
         self.bridge.error.connect(self.on_error)
+        self.bridge.pending_changed.connect(self.refresh_retry)
+        self._in_flight = set()     # saved recordings being transcribed right now
+        self.a_retry = None         # tray menu entry, if there is a tray
         self.key_held = False
         self.combo = False
         self.recording_active = False
@@ -384,6 +391,11 @@ class MainWindow(QMainWindow):
         self.info_label.setStyleSheet("color: #666; padding: 2px 0;")
         v.addWidget(self.info_label)
 
+        self.retry_btn = QPushButton("Retry transcription")
+        self.retry_btn.clicked.connect(self.on_retry)
+        self.retry_btn.setVisible(False)
+        v.addWidget(self.retry_btn)
+
         v.addWidget(QLabel("Last transcription:"))
         self.last = QTextEdit()
         self.last.setReadOnly(True)
@@ -402,9 +414,13 @@ class MainWindow(QMainWindow):
             menu = QMenu()
             a_show = QAction("Show window", self)
             a_show.triggered.connect(self.show_window)
+            self.a_retry = QAction("Retry transcription", self)
+            self.a_retry.triggered.connect(self.on_retry)
+            self.a_retry.setEnabled(False)
             a_quit = QAction("Quit", self)
             a_quit.triggered.connect(QApplication.quit)
             menu.addAction(a_show)
+            menu.addAction(self.a_retry)
             menu.addSeparator()
             menu.addAction(a_quit)
             self.tray.setContextMenu(menu)
@@ -413,6 +429,8 @@ class MainWindow(QMainWindow):
 
         self.set_status("ready", "Ready")
         self.update_info()
+        core.prune_pending()
+        self.refresh_retry()      # recordings left over from an earlier run
         self.start_listener()
         self._preload_local_if_needed()
 
@@ -590,31 +608,93 @@ class MainWindow(QMainWindow):
             core.log.warning("no audio captured (mic delivered no frames)")
             self.bridge.error.emit("No audio captured — check the microphone")
             return
+        peak = int(np.abs(audio).max())
+        # Saved before anything can go wrong; deleted only after its text was typed.
+        # Pure silence is not worth keeping.
+        path = core.save_pending(audio) if peak >= SILENT_PEAK else None
+        self._transcribe_audio(audio, path)
+
+    def _transcribe_audio(self, audio, path):
+        """Transcribe and hand the text over. The saved recording (path) stays on disk
+        after every failure; it is removed only once the text was typed
+        (_type_and_confirm). Also used by the Retry button."""
         secs = len(audio) / core.SAMPLE_RATE
         peak = int(np.abs(audio).max())
+        kept = "Recording kept, press Retry. " if path else ""
+        if path:
+            self._in_flight.add(path)
+        self.bridge.pending_changed.emit()
         t0 = time.monotonic()
         try:
             text = core.transcribe(audio, self.cfg)
         except Exception as e:
             core.log.exception("transcribe failed: %.1fs audio, peak %d", secs, peak)
-            self.bridge.error.emit(str(e))
+            self._finish_attempt(path)
+            self.bridge.error.emit(f"{kept}Transcription failed: {e}")
             return
         core.log.info("transcribed %.1fs audio, peak %d, %d chars in %.1fs",
                       secs, peak, len(text or ""), time.monotonic() - t0)
         if not text:
             # Peak is out of 32768; a live mic with speech is in the thousands.
-            why = "microphone was silent" if peak < 300 else "no speech recognised"
-            if peak >= 300:
-                core.keep_failed_audio(audio)
-            self.bridge.error.emit(f"Nothing transcribed ({secs:.0f}s) — {why}")
+            why = "microphone was silent" if peak < SILENT_PEAK else "no speech recognised"
+            self._finish_attempt(path)
+            self.bridge.error.emit(f"{kept}Nothing transcribed ({secs:.0f}s) — {why}")
             return
-        self.bridge.transcribed.emit(text)
+        self.bridge.transcribed.emit(text, str(path) if path else "")
 
-    def on_transcribed(self, text):
+    def _finish_attempt(self, path):
+        self._in_flight.discard(path)
+        self.bridge.pending_changed.emit()
+
+    def on_transcribed(self, text, path=""):
         if text:
-            threading.Thread(target=core.type_text, args=(text,), daemon=True).start()
+            threading.Thread(target=self._type_and_confirm, args=(text, path), daemon=True).start()
             self.last.setPlainText(text)
         self.set_status("ready", "Ready")
+
+    def _type_and_confirm(self, text, path):
+        """Type the text; only when that worked is the saved recording deleted."""
+        saved = Path(path) if path else None
+        try:
+            if core.type_text(text):
+                if saved:
+                    core.discard_pending(saved)
+            else:
+                kept = "Recording kept, press Retry. " if saved else ""
+                self.bridge.error.emit(f"{kept}Typing failed")
+        finally:
+            self._finish_attempt(saved)
+
+    def pending_files(self):
+        """Saved recordings that wait for a retry (not those being transcribed right now)."""
+        return [p for p in core.list_pending() if p not in self._in_flight]
+
+    def refresh_retry(self):
+        n = len(self.pending_files())
+        text = "Retry transcription" if n <= 1 else f"Retry transcription ({n} saved recordings)"
+        self.retry_btn.setText(text)
+        self.retry_btn.setVisible(n > 0)
+        if self.a_retry:
+            self.a_retry.setText(text)
+            self.a_retry.setEnabled(n > 0)
+
+    def on_retry(self):
+        files = self.pending_files()
+        if not files:
+            self.refresh_retry()
+            return
+        path = files[0]
+        try:
+            audio = core.load_pending(path)
+        except Exception as e:
+            # A file that cannot be read can never be transcribed; do not let it block the others.
+            core.log.exception("saved recording %s is unreadable", path.name)
+            core.discard_pending(path)
+            self.refresh_retry()
+            self.on_error(f"Saved recording unreadable and removed: {e}")
+            return
+        self.set_status("transcribing", "Transcribing...")
+        threading.Thread(target=self._transcribe_audio, args=(audio, path), daemon=True).start()
 
     def on_error(self, msg):
         self.set_status("error", f"Error: {msg[:80]}")
