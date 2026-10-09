@@ -51,7 +51,14 @@ Launch **Dictate** from the app menu (or `python3 gui.py`). On first launch you 
 
 ## Usage
 
-Default hotkey is **F9**. Hold it, speak, release. The transcription is typed at the cursor.
+Default hotkey is **F9**. Hold it, speak, release. The transcription is inserted at the cursor.
+
+The main window has an **Insert text by** switch below the last transcription, which you can change at any time; it applies to the next dictation and is remembered:
+
+- **Paste** (default) — the text is put on the clipboard, the paste shortcut of the focused window is pressed (Ctrl+Shift+V in terminals, Shift+Insert in xterm, Ctrl+V elsewhere) and your previous clipboard text is restored half a second later. This is one key press instead of one per character, so long text arrives at once, also in slow terminals. Only text can be restored: if the clipboard held something else (an image, for example), the dictated text stays on it, and a clipboard manager may keep a copy of every dictated text. Needs an X11 session with `xdotool`, `xprop` and `xclip` or `xsel`; elsewhere (Wayland) Dictate types the keys instead and tells you once.
+- **Type keys** — the text is sent as key presses, one per character. The clipboard stays untouched, but long text can take seconds to show up in some terminals.
+
+The log shows which way was used and how long it took (`output via paste: 369 chars in 0.61s, ok`).
 
 In **Settings** you can change:
 
@@ -85,7 +92,7 @@ If a hotkey silently does nothing after install, the two things to check are:
 
 - Every recording leaves one line in `~/.local/state/dictate/dictate.log` (length, peak level, characters, decode time — never the text). A failed one also raises a desktop notification: no audio frames, silent microphone (`peak` under 300 of 32768), nothing recognised, recording cancelled by another key or mouse button while the hotkey was held, or typing failed
 - The local Parakeet model cannot take more than 400 s in one pass; recordings over 90 s are split at a pause and decoded in pieces. Quiet audio is raised in level before decoding, and a piece that still comes back empty is retried in 20 s parts
-- A recording that had sound but produced no text is saved as a WAV in `~/.local/state/dictate/failed/`, so the failure can be replayed. This is your own voice on disk: only the newest 3 are kept, nothing is uploaded, and you can delete the folder at any time
+- Every recording with sound is saved as a WAV in `~/.local/state/dictate/pending/` before it is transcribed, and deleted as soon as its text was typed. If transcription or typing fails (an error, or nothing recognised), the file stays and the window and the tray menu show **Retry transcription**; recordings left over from an earlier run are offered at start. This is your own voice on disk: at most 30 files and none older than 14 days are kept, nothing is uploaded, and you can delete the folder at any time
 
 **Hotkey does nothing / status never changes to "Recording..."**
 
@@ -131,11 +138,12 @@ The CLI variant only works on X11 for the reasons described above. Use `gui.py` 
   "key": "f9",
   "model": "whisper-large-v3-turbo",
   "threshold": 0.0,
-  "local_stt_num_threads": 4
+  "local_stt_num_threads": 4,
+  "output_method": "paste"
 }
 ```
 
-For `provider`, valid values are `"groq"`, `"openai"`, or `"parakeet_local"`.
+For `provider`, valid values are `"groq"`, `"openai"`, or `"parakeet_local"`. `output_method` is `"paste"` (default) or `"type"`.
 
 ## License
 
