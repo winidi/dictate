@@ -60,7 +60,21 @@ In **Settings** you can change:
 - **Hotkey** — F1–F12, modifier keys (Ctrl / Alt / Shift / Super), or one of the Logitech-style mouse side buttons (`MOUSE BACK`, `MOUSE FORWARD`, `MOUSE SIDE`, `MOUSE EXTRA`, `MOUSE TASK`). Mouse buttons only work with the evdev backend (i.e. `input`-group setup complete).
 - **Model** — provider-specific list (cloud only)
 - **CPU threads** (Local only) — sherpa-onnx worker threads. 4 is the sweet spot on typical CPUs; more brings little benefit and starves the rest of the system.
+- **Vocabulary** — custom word list, see [Custom vocabulary](#custom-vocabulary)
 - **Min hold to send** — recordings shorter than this duration are discarded. Recommended ~2.0s when bound to Ctrl / Alt / Shift so regular keyboard shortcuts do not trigger recording.
+
+## Custom vocabulary
+
+Settings → **Vocabulary** edits `~/.config/dictate/vocab.txt`. One entry per line, `#` starts a comment:
+
+```
+Kubernetes                  # term: hint for Whisper
+Post Gres -> PostgreSQL     # replacement: fixes a typical mis-hearing
+```
+
+- **Term** — sent to Groq/OpenAI as the Whisper `prompt`. This improves recognition while decoding. Local Parakeet has no prompt, so terms do nothing there.
+- **`Wrong -> Right`** — replaces whole words, case-insensitive, in every transcript, also offline. The right side also counts as a term.
+- The prompt is cut at 800 characters. Put the most important terms first.
 
 ## Local (offline) transcription
 

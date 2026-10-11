@@ -10,7 +10,7 @@ from PyQt6.QtCore import Qt, QObject, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QApplication, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
-    QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu,
+    QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu, QPlainTextEdit,
     QMessageBox, QPushButton, QSpinBox, QSystemTrayIcon, QTextEdit,
     QVBoxLayout, QWidget,
 )
@@ -144,6 +144,21 @@ class SettingsDialog(QDialog):
             "taps and shortcuts don't transcribe."
         )
         self.form.addRow("Min hold to send:", self.threshold_box)
+
+        self.vocab_edit = QPlainTextEdit()
+        self.vocab_edit.setFixedHeight(110)
+        self.vocab_edit.setPlaceholderText("Kubernetes\nPost Gres -> PostgreSQL")
+        self.vocab_edit.setToolTip(
+            "Custom vocabulary, one entry per line.\n"
+            "Term: hint sent to Whisper (Groq/OpenAI).\n"
+            "Wrong -> Right: replaced in every transcript, also offline.\n"
+            "# starts a comment."
+        )
+        try:
+            self.vocab_edit.setPlainText(core.VOCAB_PATH.read_text(encoding="utf-8"))
+        except OSError:
+            pass
+        self.form.addRow("Vocabulary:", self.vocab_edit)
 
         self.test_btn = QPushButton("Test API key")
         self.test_btn.clicked.connect(self.on_test)
@@ -287,6 +302,10 @@ class SettingsDialog(QDialog):
             QMessageBox.information(self, "Dictate", "API key works.")
         else:
             QMessageBox.warning(self, "Dictate", "API key rejected.")
+
+    def save_vocab(self):
+        core.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        core.VOCAB_PATH.write_text(self.vocab_edit.toPlainText(), encoding="utf-8")
 
     def values(self):
         # Sync current field back into the per-provider cache first, but only
@@ -458,6 +477,7 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self.cfg, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self.cfg.update(dlg.values())
+            dlg.save_vocab()
             core.save_config(self.cfg)
             self.restart_listener()
             self.update_info()

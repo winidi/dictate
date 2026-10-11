@@ -3,6 +3,7 @@ import io
 import json
 import logging
 import logging.handlers
+import re
 import subprocess
 import threading
 import wave
@@ -76,6 +77,7 @@ GROQ_MODELS_URL  = PROVIDERS["groq"]["models_url"]
 
 CONFIG_DIR = Path.home() / ".config" / "dictate"
 CONFIG_PATH = CONFIG_DIR / "config.json"
+VOCAB_PATH = CONFIG_DIR / "vocab.txt"
 LOG_PATH = Path.home() / ".local" / "state" / "dictate" / "dictate.log"
 
 log = logging.getLogger("dictate")
@@ -311,23 +313,77 @@ def keep_failed_audio(audio):
         log.exception("could not keep failed recording")
 
 
+# ── Custom vocabulary ────────────────────────────────────────────────────────
+# One entry per line in VOCAB_PATH. "#" starts a comment.
+#   Term             -> hint only: sent to Whisper as prompt (HTTP providers)
+#   Wrong -> Right   -> replacement applied to every transcript (all providers)
+# The "Right" side of a replacement is also used as a hint.
+PROMPT_MAX_CHARS = 800   # Whisper reads about 224 tokens of prompt
+
+
+def load_vocab(path=None):
+    """Return (terms, replacements) from the vocabulary file; empty if missing."""
+    path = path or VOCAB_PATH
+    terms, repl = [], []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return terms, repl
+    for line in lines:
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if "->" in line:
+            wrong, right = (x.strip() for x in line.split("->", 1))
+            if wrong and right:
+                repl.append((wrong, right))
+                terms.append(right)
+        else:
+            terms.append(line)
+    return terms, repl
+
+
+def build_prompt(terms):
+    """Comma-joined unique terms, cut to PROMPT_MAX_CHARS at a term boundary."""
+    out, size = [], 0
+    for t in dict.fromkeys(terms):
+        size += len(t) + 2
+        if size > PROMPT_MAX_CHARS:
+            break
+        out.append(t)
+    return ", ".join(out)
+
+
+def apply_vocab(text, repl):
+    """Replace whole words, case-insensitive. Longer patterns go first."""
+    for wrong, right in sorted(repl, key=lambda r: -len(r[0])):
+        text = re.sub(r"(?<!\w)" + re.escape(wrong) + r"(?!\w)", lambda m: right,
+                      text, flags=re.IGNORECASE)
+    return text
+
+
 def transcribe(audio, cfg):
     provider = cfg.get("provider", DEFAULT_PROVIDER)
     p = PROVIDERS.get(provider, PROVIDERS[DEFAULT_PROVIDER])
+    terms, repl = load_vocab()
     if p.get("is_local"):
         import local_stt
         threads = int(cfg.get("local_stt_num_threads", local_stt.DEFAULT_THREADS))
-        return local_stt.get_recognizer(num_threads=threads).transcribe(audio)
+        text = local_stt.get_recognizer(num_threads=threads).transcribe(audio)
+        return apply_vocab(text, repl)
     # HTTP providers
     key = cfg.get(p["key_field"], "")
     model = cfg.get("model") or p["default_model"]
     wav = to_wav_bytes(audio)
     files = {"file": ("audio.wav", wav, "audio/wav")}
     data = {"model": model, "response_format": "text"}
+    prompt = build_prompt(terms)
+    if prompt:
+        data["prompt"] = prompt
     headers = {"Authorization": f"Bearer {key}"}
     r = requests.post(provider_url(cfg, p), files=files, data=data, headers=headers, timeout=30)
     r.raise_for_status()
-    return r.text.strip()
+    return apply_vocab(r.text.strip(), repl)
 
 
 def test_api_key(api_key, provider=DEFAULT_PROVIDER, cfg=None):
