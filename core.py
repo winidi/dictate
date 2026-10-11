@@ -124,6 +124,8 @@ DEFAULT_CONFIG = {
     "openai_api_key":        "",   # OpenAI key
     "mode":                  "ptt",
     "key":                   "f9",
+    "disable_capslock":      True,   # with hotkey Caps Lock: switch its function off in the desktop
+    "capslock_managed":      False,  # True once the app itself switched it off (so it may undo that)
     "model":                 DEFAULT_MODEL,
     "threshold":             0.0,
     "local_stt_num_threads": 4,    # sherpa-onnx CPU thread count for parakeet_local
