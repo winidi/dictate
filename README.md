@@ -21,10 +21,19 @@ Hold a hotkey, speak, release — the transcribed text is typed wherever your cu
 
 ## Requirements
 
-- Linux (X11 or Wayland — see the Wayland section below)
+**Supported systems:** Linux, macOS and Windows. WSL is not supported.
+
+All systems:
+
 - Python 3.10+
-- A microphone that PipeWire/PulseAudio can see
+- A microphone
 - Either a Groq API key (free tier at [console.groq.com](https://console.groq.com)), an OpenAI API key — or nothing at all: the Local provider needs no key and no network
+
+Per system:
+
+- **Linux:** X11 or Wayland (see the Wayland section below). The microphone must be visible to PipeWire/PulseAudio.
+- **Windows:** tested on Windows 11. Install the packages listed under Features. Hotkeys and typing go through `pynput`.
+- **macOS:** install the packages listed under Features. Hotkeys and typing go through `pynput`.
 
 ## Install
 
