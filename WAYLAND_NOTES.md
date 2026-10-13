@@ -30,7 +30,9 @@ Between 00:13 and 01:16 there was **no Xorg NVIDIA module installed**. Any GDM r
 
 **Fix:** use `ydotool` instead, which writes to `/dev/uinput`. That is a kernel interface below both X and Wayland, so any focused window receives the keystrokes. Ubuntu 24.04's `ydotool` 0.1.8 works standalone (no `ydotoold` daemon needed), just warns about missing daemon. `/dev/uinput` is accessible when the user is in the `input` group (the ACL is granted automatically by `systemd-logind`).
 
-`core.type_text` tries `ydotool` first and falls back to `xdotool` if the binary is missing.
+`core.type_text` tries `wtype` first, then `ydotool`, then `xdotool`.
+
+**Layout caveat (TASK-001):** `wtype` works on KDE Plasma and wlroots but not on GNOME Mutter (no virtual-keyboard protocol). On GNOME, `ydotool` sends US-QWERTY key positions and the compositor applies the active layout, so QWERTZ gets Y/Z swapped and umlauts are lost. `core.type_text` therefore types through `ydotool` with a Swiss German (`ch`) key-position table when GNOME's *active* input source is `ch` (table from `/usr/share/X11/xkb/symbols/ch`). Other GNOME layouts still use plain `ydotool` and keep the problem.
 
 ## Bug 3 — `sd.InputStream.stop()` freezes the Qt main thread
 

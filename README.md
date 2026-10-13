@@ -16,7 +16,7 @@ Hold a hotkey, speak, release — the transcribed text is typed wherever your cu
   - **Local** offline — `parakeet-primeline` (German fine-tune of `nvidia/parakeet-tdt-0.6b-v3`, int8 ONNX via [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)). CPU-only, ~50 ms decode for 2 s audio at 4 threads. No network, no API key.
 - Optional minimum-hold threshold to ignore accidental modifier presses
 - API keys stored locally in `~/.config/dictate/config.json` (mode 600)
-- **Wayland-compatible**: uses `evdev` for key capture and `ydotool` for typing, falls back to `pynput`/`xdotool` on X11
+- **Wayland-compatible**: uses `evdev` for key capture and `wtype`/`ydotool` for typing, falls back to `pynput`/`xdotool` on X11
 - **Windows / macOS**: `pip install PyQt6 sounddevice pynput requests numpy` and run `python gui.py`; hotkeys and typing go through `pynput`. Pair it with the Yorik provider and the machine needs no model.
 
 ## Requirements
@@ -72,7 +72,7 @@ Attribution (CC-BY-4.0): [primeline](https://huggingface.co/flozen1981/parakeet-
 
 ## Wayland notes
 
-On Wayland (GNOME Mutter in particular) the compositor does not forward global key events to XWayland, so `pynput`'s X-based listener sees nothing. Dictate works around this by reading `/dev/input/event*` directly via `evdev`. The `install.sh` script sets this up. Typing likewise uses `ydotool` (via `/dev/uinput`) because `xdotool` cannot type into native Wayland windows.
+On Wayland (GNOME Mutter in particular) the compositor does not forward global key events to XWayland, so `pynput`'s X-based listener sees nothing. Dictate works around this by reading `/dev/input/event*` directly via `evdev`. The `install.sh` script sets this up. Typing uses `wtype` (layout-correct, KDE/wlroots) and falls back to `ydotool` (via `/dev/uinput`, US-QWERTY only) because `xdotool` cannot type into native Wayland windows.
 
 If a hotkey silently does nothing after install, the two things to check are:
 
