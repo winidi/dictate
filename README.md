@@ -17,7 +17,7 @@ Hold a hotkey, speak, release — the transcribed text is typed wherever your cu
 - Optional minimum-hold threshold to ignore accidental modifier presses
 - **Optional "written text" pass** — a local Gemma 4 model (via llama.cpp) turns the spoken transcript into written text: filler words and false starts go, punctuation and spelling get fixed, your wording and tone stay. It can match your own writing style and adapt to the window the text goes into. Off by default, runtime and model are downloaded on demand, nothing leaves the machine
 - API keys stored locally in `~/.config/dictate/config.json` (mode 600) — `%APPDATA%\Dictate\config.json` on Windows
-- **Wayland-compatible**: uses `evdev` for key capture and `ydotool` for typing, falls back to `pynput`/`xdotool` on X11
+- **Wayland-compatible**: uses `evdev` for key capture and `wtype`/`ydotool` for typing, falls back to `pynput`/`xdotool` on X11
 - **Windows**: same features, same four backends. Hotkeys come from a low-level keyboard hook plus a mouse hook (`pynput`), text arrives as a paste (the clipboard is restored afterwards and the dictation stays out of the clipboard history), in terminals as `SendInput` Unicode keystrokes, so umlauts and ß arrive intact on any layout. Notifications come from the tray icon, `install.ps1` puts Dictate in the Start Menu. macOS runs on the same code path but is untested.
 
 ## Requirements
@@ -122,7 +122,7 @@ The polished text is logged only as a character count, like everything else.
 
 ## Wayland notes
 
-On Wayland (GNOME Mutter in particular) the compositor does not forward global key events to XWayland, so `pynput`'s X-based listener sees nothing. Dictate works around this by reading `/dev/input/event*` directly via `evdev`. The `install.sh` script sets this up. Typing likewise uses `ydotool` (via `/dev/uinput`) because `xdotool` cannot type into native Wayland windows.
+On Wayland (GNOME Mutter in particular) the compositor does not forward global key events to XWayland, so `pynput`'s X-based listener sees nothing. Dictate works around this by reading `/dev/input/event*` directly via `evdev`. The `install.sh` script sets this up. Typing uses `wtype` (layout-correct, KDE/wlroots) and falls back to `ydotool` (via `/dev/uinput`, US-QWERTY only) because `xdotool` cannot type into native Wayland windows.
 
 If a hotkey silently does nothing after install, the two things to check are:
 
