@@ -10,7 +10,9 @@ Requires:
   - membership in group `input` (sudo usermod -a -G input $USER; re-login)
 """
 import glob
+import grp
 import os
+import pwd
 import select
 import sys
 import threading
@@ -103,6 +105,28 @@ def _find_keyboards():
     return devs
 
 
+def _no_access_reason():
+    """Why no input device could be read, saying why first and what to do second.
+
+    Group changes reach only sessions started afterwards, so being in group
+    `input` in the group database is not the same as this session having it.
+    """
+    generic = "no readable keyboard devices in /dev/input"
+    try:
+        group = grp.getgrnam("input")
+        user = pwd.getpwuid(os.getuid())
+    except KeyError:
+        return generic
+    if group.gr_gid in os.getgroups():
+        return generic
+    if user.pw_name in group.gr_mem or user.pw_gid == group.gr_gid:
+        return (f"{user.pw_name} is in group `input`, but this login session started before "
+                "that, so /dev/input cannot be read yet. Please log out and log in again "
+                "(or reboot)")
+    return (f"{user.pw_name} is not in group `input`, which is needed to read /dev/input. "
+            f"Please run: sudo usermod -a -G input {user.pw_name}, then log out and log in again")
+
+
 class Listener:
     """Drop-in replacement for pynput.keyboard.Listener."""
 
@@ -120,10 +144,7 @@ class Listener:
     def start(self):
         self._devices = _find_keyboards()
         if not self._devices:
-            raise RuntimeError(
-                "no readable keyboard devices in /dev/input "
-                "(user not in group `input`? run: sudo usermod -a -G input $USER, then re-login)"
-            )
+            raise RuntimeError(_no_access_reason())
         self._stop_r, self._stop_w = os.pipe()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()

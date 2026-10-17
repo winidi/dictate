@@ -34,19 +34,22 @@ Hold a hotkey, speak, release — the transcribed text is typed wherever your cu
 ```bash
 git clone https://github.com/winidi/dictate.git
 cd dictate
-./install.sh
+./run.sh
 ```
 
-The installer adds:
+Run it from a terminal the first time (apt asks for your sudo password). `run.sh` sets up whatever is missing and then starts Dictate; later runs skip everything that is already in place. It adds:
 
-- system packages: `xdotool`, `ydotool`, `python3-evdev`, `libnotify-bin`, `python3-pip`, `libxcb-cursor0`, `libportaudio2`
-- Python packages: `PyQt6`, `sounddevice`, `pynput`, `requests`, `numpy`, `sherpa-onnx`, `soundfile`, `huggingface_hub`
+- system packages (apt): `xdotool`, `ydotool`, `libnotify-bin`, `libxcb-cursor0`, `libportaudio2`, `build-essential`, `python3-dev`
+- [uv](https://docs.astral.sh/uv/), and a virtualenv in `.venv` with the Python packages from `requirements.txt` (`evdev` is compiled there, hence `build-essential` and `python3-dev`)
+- nvm and Node `lts/krypton`
 - membership in group `input` (needed for evdev on Wayland)
 - a desktop entry so **Dictate** shows up in your app menu
 
-The Parakeet ONNX model itself (~640 MB) is *not* downloaded by `install.sh` — the download is triggered on demand from Settings when you first pick the local backend, so users who only want cloud transcription don't pay the disk cost.
+`./run.sh --setup` does the setup without starting the app.
 
-If the installer added you to the `input` group you must log out and back in for it to take effect (or reboot — see WAYLAND_NOTES.md for the `systemd-linger` gotcha that can defeat a plain logout).
+The Parakeet ONNX model itself (~640 MB) is *not* downloaded by `run.sh` — the download is triggered on demand from Settings when you first pick the local backend, so users who only want cloud transcription don't pay the disk cost.
+
+If `run.sh` added you to the `input` group you must log out and back in for it to take effect (or reboot — see WAYLAND_NOTES.md for the `systemd-linger` gotcha that can defeat a plain logout).
 
 ### Windows
 
@@ -122,7 +125,7 @@ The polished text is logged only as a character count, like everything else.
 
 ## Wayland notes
 
-On Wayland (GNOME Mutter in particular) the compositor does not forward global key events to XWayland, so `pynput`'s X-based listener sees nothing. Dictate works around this by reading `/dev/input/event*` directly via `evdev`. The `install.sh` script sets this up. Typing likewise uses `ydotool` (via `/dev/uinput`) because `xdotool` cannot type into native Wayland windows.
+On Wayland (GNOME Mutter in particular) the compositor does not forward global key events to XWayland, so `pynput`'s X-based listener sees nothing. Dictate works around this by reading `/dev/input/event*` directly via `evdev`. `run.sh` sets this up. Typing likewise uses `ydotool` (via `/dev/uinput`) because `xdotool` cannot type into native Wayland windows.
 
 If a hotkey silently does nothing after install, the two things to check are:
 
