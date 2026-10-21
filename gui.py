@@ -20,10 +20,22 @@ import i18n
 import pie
 import polish
 from i18n import tr
+from core import COPILOT_KEY
 
 # Arrow keys choose a pie-menu mode while the hotkey is held.
 ARROW_KEYS = {keyboard.Key.up: "up", keyboard.Key.down: "down",
               keyboard.Key.left: "left", keyboard.Key.right: "right"}
+
+
+def _tolerated_presses():
+    """Key presses that belong to an ongoing gesture and must not cancel a take.
+
+    Only Super/Shift: HP's Copilot key is a firmware macro that presses
+    left-Meta and left-Shift before the key itself, so those two must not
+    arrive as "another key" and abort the recording. Everything else —
+    including a mouse click — still cancels, as before.
+    """
+    return frozenset(core.KEY_MAP["super"]) | frozenset(core.KEY_MAP["shift"])
 
 
 class PynputListener:
@@ -956,14 +968,21 @@ class MainWindow(QMainWindow):
             return
         self._target_keys = set(keys)
 
+        # Super/Shift presses and plain mouse clicks are not deliberate
+        # "another key" gestures, so they never cancel an in-flight take.
+        # A genuine Ctrl+C or letter key still cancels as before.
+        _tolerated = _tolerated_presses()
+
         def on_press(k):
             try:
+                if k in _tolerated:
+                    return
                 if k in self._target_keys:
                     self.bridge.hotkey_press.emit()
                 elif self.tracker.active and k in ARROW_KEYS:
                     # Picks a pie-menu mode instead of cancelling the recording.
                     self.tracker.set_segment(pie.segment_for_arrow(ARROW_KEYS[k], self.tracker.n))
-                else:
+                elif k is not COPILOT_KEY:
                     self._last_other = k
                     self.bridge.other_press.emit()
             except Exception:

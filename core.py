@@ -108,6 +108,19 @@ def setup_logging():
     log.addHandler(h)
     log.setLevel(logging.INFO)
 
+# The Microsoft Copilot key. Two firmware flavours exist in the wild:
+#
+#   * Standards-compliant keyboards (kernel >= 6.6) send KEY_ASSISTANT (0x247).
+#   * HP laptops (verified on a ZBook Ultra G1a, XKB "ch") send the *shortcut*
+#     Super+Shift+F23 instead — KEY_F23 (0xc1) with left-Meta and left-Shift
+#     held. There is no KEY_ASSISTANT on that keyboard at all.
+#
+# COPILOT_KEY is the sentinel for the first flavour; the HP one is recognised
+# in the evdev listener from the (Super, Shift, F23) combination, because no
+# other key on a normal keyboard emits F23. Both are reported to the GUI as
+# COPILOT_KEY so a single "copilot" hotkey covers either.
+COPILOT_KEY = getattr(keyboard.Key, "copilot", None) or keyboard.KeyCode.from_vk(0x1008FF2D)
+
 KEY_MAP = {f"f{i}": {getattr(keyboard.Key, f"f{i}")} for i in range(1, 13)}
 KEY_MAP.update({
     "pause":       {keyboard.Key.pause},
@@ -137,6 +150,13 @@ KEY_MAP.update({
     "mouse_side":    {("mouse", "side"),    ("mouse", "x1")},
     "mouse_extra":   {("mouse", "extra"),   ("mouse", "x2")},
     "mouse_task":    {("mouse", "task")},
+    # Microsoft Copilot key (the key that replaced right-Ctrl on newer
+    # keyboards). Windows sends it as a special HID usage and X11 has no
+    # core keysym for it, so this works via the evdev backend on Wayland/
+    # X11 (and on Windows via pynput). Both firmware flavours map here:
+    # KEY_ASSISTANT via COPILOT_KEY, and the HP Super+Shift+F23 shortcut,
+    # which the evdev listener rewrites to COPILOT_KEY before reporting.
+    "copilot":       {COPILOT_KEY},
 })
 
 # Hotkeys the pynput backend (everything but Linux-evdev) cannot deliver.
