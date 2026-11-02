@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Dictate GUI — PyQt6 tray app for voice dictation (Linux, Windows, macOS)."""
+import struct
 import sys
 import threading
 import time
 
 import numpy as np
-from PyQt6.QtCore import Qt, QObject, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QColor, QCursor, QIcon, QPainter, QPixmap
+from PyQt6.QtCore import QBuffer, QIODevice, Qt, QObject, QTimer, pyqtSignal
+from PyQt6.QtGui import QAction, QColor, QCursor, QIcon, QLinearGradient, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
@@ -395,6 +396,18 @@ class SettingsDialog(QDialog):
             "the program you are typing into."
         ))
         v.addWidget(self.pl_modes_edit)
+
+        lbl = QLabel(tr("Email signature (optional) — added word for word below the email. "
+                        "Leave empty if your mail program adds one:"))
+        lbl.setWordWrap(True)
+        v.addWidget(lbl)
+        self.pl_signature_edit = QPlainTextEdit(cfg.get("polish_signature", "") or "")
+        self.pl_signature_edit.setPlaceholderText(tr("Best regards\nYour name"))
+        self.pl_signature_edit.setToolTip(tr(
+            "Added to every mode with {signature} in its instructions, like the Email mode."
+        ))
+        self.pl_signature_edit.setMaximumHeight(60)
+        v.addWidget(self.pl_signature_edit)
         return page
 
     @staticmethod
@@ -443,6 +456,7 @@ class SettingsDialog(QDialog):
             "polish_timeout":  float(self.pl_timeout_box.value()),
             "polish_style":    self.pl_style_edit.toPlainText().strip(),
             "polish_vocabulary": self.pl_vocab_edit.toPlainText().strip(),
+            "polish_signature": self.pl_signature_edit.toPlainText().strip(),
             "polish_default_instructions": default,
             "polish_profiles": profiles,
         }
@@ -726,6 +740,13 @@ def make_mic_icon(color="#2b2b2b", size=64):
     p = QPainter(pix)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     p.scale(size / 64, size / 64)
+    _paint_mic(p, color)
+    p.end()
+    return QIcon(pix)
+
+
+def _paint_mic(p, color):
+    """The microphone on a 64 x 64 grid."""
     p.setBrush(QColor(color))
     p.setPen(Qt.PenStyle.NoPen)
     p.drawRoundedRect(22, 8, 20, 32, 10, 10)
@@ -737,8 +758,56 @@ def make_mic_icon(color="#2b2b2b", size=64):
     p.drawArc(16, 28, 32, 24, 0, -180 * 16)
     p.drawLine(32, 50, 32, 58)
     p.drawLine(22, 58, 42, 58)
+
+
+APP_ICON_SIZES = (16, 24, 32, 48, 64, 128, 256)
+
+
+def _app_icon_pixmap(size):
+    """The application icon: a white microphone on a blue rounded square."""
+    pix = QPixmap(size, size)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.scale(size / 64, size / 64)
+    gradient = QLinearGradient(0, 0, 64, 64)
+    gradient.setColorAt(0, QColor("#2563eb"))
+    gradient.setColorAt(1, QColor("#7c3aed"))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(gradient)
+    p.drawRoundedRect(0, 0, 64, 64, 14, 14)
+    p.translate(32, 33)
+    p.scale(0.78, 0.78)
+    p.translate(-32, -33)
+    _paint_mic(p, "#ffffff")
     p.end()
-    return QIcon(pix)
+    return pix
+
+
+def make_app_icon():
+    icon = QIcon()
+    for size in APP_ICON_SIZES:
+        icon.addPixmap(_app_icon_pixmap(size))
+    return icon
+
+
+def write_app_icon(path):
+    """Write the application icon as a Windows .ico holding every size, so
+    small places get a sharp picture instead of a scaled-down 256 px one."""
+    images = []
+    for size in APP_ICON_SIZES:
+        buf = QBuffer()
+        buf.open(QIODevice.OpenModeFlag.WriteOnly)
+        if not _app_icon_pixmap(size).save(buf, "PNG"):
+            raise RuntimeError(f"could not draw the {size} px icon")
+        images.append((size, bytes(buf.data())))
+    offset = 6 + 16 * len(images)
+    header = struct.pack("<HHH", 0, 1, len(images))
+    for size, png in images:
+        header += struct.pack("<BBBBHHII", size % 256, size % 256, 0, 0, 1, 32, len(png), offset)
+        offset += len(png)
+    with open(path, "wb") as f:
+        f.write(header + b"".join(png for _, png in images))
 
 
 STATUS_STYLES = {
@@ -754,7 +823,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Dictate")
         self.resize(500, 380)
-        self.setWindowIcon(make_mic_icon())
+        self.setWindowIcon(make_app_icon())
 
         self.cfg = core.load_config()
         self.recorder = core.Recorder()
@@ -956,7 +1025,10 @@ class MainWindow(QMainWindow):
             return
         self._target_keys = set(keys)
 
-        def on_press(k):
+        # injected: a key sent by a program, above all our own Ctrl+V when pasting.
+        def on_press(k, injected=False):
+            if injected:
+                return
             try:
                 if k in self._target_keys:
                     self.bridge.hotkey_press.emit()
@@ -969,7 +1041,9 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        def on_release(k):
+        def on_release(k, injected=False):
+            if injected:
+                return
             try:
                 if k in self._target_keys:
                     self.bridge.hotkey_release.emit()
@@ -1175,7 +1249,9 @@ class MainWindow(QMainWindow):
 
     def on_transcribed(self, text, raw="", mode_name=""):
         if text:
-            threading.Thread(target=core.type_text, args=(text,), daemon=True).start()
+            # Only Windows chooses by program (paste or keystrokes).
+            app = polish.active_window()[0] if core.IS_WINDOWS else ""
+            threading.Thread(target=core.type_text, args=(text, app), daemon=True).start()
             if raw and raw != text:
                 tag = f" [{mode_name}]" if mode_name else ""
                 self.last.setPlainText(text + "\n\n" + tr("— as spoken{tag}: {raw}", tag=tag, raw=raw))
@@ -1252,8 +1328,14 @@ def main():
     # otherwise never yields to Python's SIGINT handler.
     import signal
     signal.signal(signal.SIGINT, signal.SIG_DFL)
+    if core.IS_WINDOWS:
+        # Without its own ID the taskbar files Dictate under pythonw.exe and
+        # shows the Python icon.
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("winidi.Dictate")
     app = QApplication(sys.argv)
     app.setApplicationName("Dictate")
+    app.setWindowIcon(make_app_icon())
     app.aboutToQuit.connect(polish.stop_server)
     i18n.set_language(core.load_config().get("ui_language", "auto"))
     if not acquire_single_instance_lock():

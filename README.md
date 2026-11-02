@@ -18,7 +18,7 @@ Hold a hotkey, speak, release — the transcribed text is typed wherever your cu
 - **Optional "written text" pass** — a local Gemma 4 model (via llama.cpp) turns the spoken transcript into written text: filler words and false starts go, punctuation and spelling get fixed, your wording and tone stay. It can match your own writing style and adapt to the window the text goes into. Off by default, runtime and model are downloaded on demand, nothing leaves the machine
 - API keys stored locally in `~/.config/dictate/config.json` (mode 600) — `%APPDATA%\Dictate\config.json` on Windows
 - **Wayland-compatible**: uses `evdev` for key capture and `ydotool` for typing, falls back to `pynput`/`xdotool` on X11
-- **Windows**: same features, same four backends. Hotkeys come from a low-level keyboard hook plus a mouse hook (`pynput`), text goes out through `SendInput` as Unicode, so umlauts and ß arrive intact on any layout. Notifications come from the tray icon, `install.ps1` puts Dictate in the Start Menu. macOS runs on the same code path but is untested.
+- **Windows**: same features, same four backends. Hotkeys come from a low-level keyboard hook plus a mouse hook (`pynput`), text arrives as a paste (the clipboard is restored afterwards and the dictation stays out of the clipboard history), in terminals as `SendInput` Unicode keystrokes, so umlauts and ß arrive intact on any layout. Notifications come from the tray icon, `install.ps1` puts Dictate in the Start Menu. macOS runs on the same code path but is untested.
 
 ## Requirements
 
@@ -99,7 +99,7 @@ People speak differently from how they write. With **Settings → Written text �
 - **Your style**: paste a few of your own texts into the "How you write" box and the model matches that voice
 - **Per window**: one line per destination, e.g. `linkedin = Beruflich, aber locker. Kurze Absätze.` The word on the left is looked for in the title and program name of the window that will receive the text. `* = …` is the default. (Window titles are not available on GNOME Wayland, the default applies there.)
 
-**Pie menu — pick a mode while you speak.** With the hotkey held, move the mouse a little in a direction (or tap an arrow key): a translucent circle at the pointer shows the configured modes, e.g. *English* at the top and *Formatted* at the bottom, with *Standard* in the centre. Release, and the dictation is written that way — translated, structured, whatever the mode's instruction says. Only the direction counts, so the pointer may leave the circle; no movement means plain written text. Modes are one line each in Settings (`English = Translate the text into natural English.`), up to eight, the first at 12 o'clock. Push-to-talk only. On GNOME Wayland no window can be drawn at the pointer, so the current mode is shown in the shell's own on-screen display (the volume pill) instead; the gesture itself works the same. The choice never depends on the picture: the main window shows which mode was applied.
+**Pie menu — pick a mode while you speak.** With the hotkey held, move the mouse a little in a direction (or tap an arrow key): a translucent circle at the pointer shows the configured modes, by default *English* at the top, *Email* on the right, *Formatted* at the bottom and *Short message* on the left, with *Standard* in the centre. Release, and the dictation is written that way — translated, structured, as an email with placeholders like `[Name]`, as a message cut to the essentials, whatever the mode's instruction says. Emails end after the body because most mail programs add the signature; to have one added anyway, enter it under *Email signature* in Settings. Any mode with `{signature}` in its instructions gets that text word for word. Only the direction counts, so the pointer may leave the circle; no movement means plain written text. Modes are one line each in Settings (`English = Translate the text into natural English.`), up to eight, the first at 12 o'clock. Push-to-talk only. On GNOME Wayland no window can be drawn at the pointer, so the current mode is shown in the shell's own on-screen display (the volume pill) instead; the gesture itself works the same. The choice never depends on the picture: the main window shows which mode was applied.
 
 Nothing is downloaded on its own. When you switch the feature on and no model is installed, Dictate asks whether you already run one (then it only sends requests there) or whether it should download llama.cpp and Gemma 4; the download button asks once more with the exact size and the free space on the disk.
 
@@ -201,6 +201,7 @@ The CLI variant only works on X11 for the reasons described above. Use `gui.py` 
   "polish_timeout": 8.0,
   "polish_style": "",
   "polish_vocabulary": "Dirk Winiecki\nParakeet",
+  "polish_signature": "",
   "polish_default_instructions": "",
   "polish_profiles": [{"match": "linkedin", "instructions": "Beruflich, aber locker."}],
   "polish_modes": [{"name": "English", "instructions": "Translate the text into natural English."}]

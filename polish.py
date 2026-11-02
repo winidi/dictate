@@ -739,9 +739,15 @@ def build_messages(cfg, text: str, app: str, title: str, mode: str = ""):
     ]
 
 
+SIGNATURE_MARK = "{signature}"   # in a mode's instructions: add polish_signature to the result
+
+
 def polish(cfg, text: str, app: str = "", title: str = "", mode: str = "") -> str:
     """Return the polished text. Raises when the server is not ready or the
     request fails; the caller then types the raw text."""
+    # The signature is added here, not by the model, so it arrives word for word.
+    signature = (cfg.get("polish_signature") or "").strip() if SIGNATURE_MARK in mode else ""
+    mode = mode.replace(SIGNATURE_MARK, "")
     s = get_server(cfg)
     if s is None:
         raise RuntimeError(tr("polishing is not installed"))
@@ -751,9 +757,10 @@ def polish(cfg, text: str, app: str = "", title: str = "", mode: str = "") -> st
         raise RuntimeError(s.error())
     timeout = float(cfg.get("polish_timeout", DEFAULT_TIMEOUT))
     # Written text is rarely longer than the spoken original; allow some slack.
-    max_tokens = min(CTX_SIZE // 2, len(text) // 2 + 128)
+    # A mode can make it longer: an email adds a subject, greeting and closing.
+    max_tokens = min(CTX_SIZE // 2, len(text) // 2 + (384 if mode.strip() else 128))
     out = s.chat(build_messages(cfg, text, app, title, mode), max_tokens=max_tokens, timeout=timeout)
     out = _clean(out)
     if not out:
         raise RuntimeError(tr("model returned nothing"))
-    return out
+    return f"{out}\n\n{signature}" if signature else out

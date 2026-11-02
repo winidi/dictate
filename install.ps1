@@ -64,8 +64,7 @@ import sys
 from PyQt6.QtGui import QGuiApplication
 app = QGuiApplication(sys.argv)
 import gui
-ok = gui.make_mic_icon(size=256).pixmap(256, 256).save(sys.argv[1], "ICO")
-sys.exit(0 if ok else 1)
+gui.write_app_icon(sys.argv[1])
 '@
 Push-Location $ScriptDir
 try {

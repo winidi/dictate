@@ -188,6 +188,13 @@ DE = {
     "One per line, \"Name = instructions\"; empty = no pie menu:":
         "Kreismenü — Hotkey halten und die Maus Richtung Modus bewegen (oder eine Pfeiltaste tippen). "
         "Eine Zeile je Modus, \"Name = Anweisung\"; leer = kein Kreismenü:",
+    "Email signature (optional) — added word for word below the email. "
+    "Leave empty if your mail program adds one:":
+        "E-Mail-Signatur (optional) — wird wörtlich unter die E-Mail gesetzt. "
+        "Leer lassen, wenn dein Mailprogramm sie selbst einfügt:",
+    "Best regards\nYour name": "Viele Grüße\nDein Name",
+    "Added to every mode with {signature} in its instructions, like the Email mode.":
+        "Wird an jeden Modus mit {signature} in der Anweisung angehängt, zum Beispiel an E-Mail.",
     "The first mode sits at 12 o'clock, the rest follow clockwise. No\n"
     "movement = plain written text. Only the direction counts, the pointer\n"
     "may leave the circle. Arrow keys pick the nearest segment; with a\n"
@@ -261,6 +268,9 @@ DE = {
         "Aufnahme nach {held}s abgebrochen — eine andere Taste oder Maustaste wurde gedrückt",
     "Discarded (held {dur}s)": "Verworfen ({dur}s gehalten)",
     "Standard": "Standard",
+    "Email": "E-Mail",
+    "Formatted": "Formatiert",
+    "Short message": "Kurznachricht",
     "Recording... ({name})": "Aufnahme... ({name})",
     "Recording...": "Aufnahme...",
     "No API key — open Settings": "Kein API-Key — Einstellungen öffnen",

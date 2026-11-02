@@ -168,6 +168,7 @@ DEFAULT_CONFIG = {
     "polish_timeout":        8.0,      # seconds; after that the raw text is typed
     "polish_style":          "",       # the user's own texts as a style sample
     "polish_vocabulary":     "",       # names and terms, one per line; fixes sound-alike misspellings
+    "polish_signature":      "",       # added word for word to modes with {signature}; "" -> none
     "polish_default_instructions": "", # "" -> polish.DEFAULT_INSTRUCTIONS
     "polish_profiles":       None,     # None -> polish.DEFAULT_PROFILES
     "polish_modes":          None,     # pie-menu modes; None -> pie.DEFAULT_MODES, [] -> no pie
@@ -246,9 +247,24 @@ def notify(msg, urgency="normal", timeout_ms=1500):
         pass
 
 
-def type_text(text):
+# Keep real keystrokes in terminals: they handle them reliably, and a paste there
+# can raise a multi-line warning or end up collapsed by the shell's input line.
+WINDOWS_TERMINALS = {"windowsterminal", "openconsole", "conhost", "cmd", "powershell", "pwsh",
+                     "wezterm-gui", "alacritty", "mintty", "putty"}
+
+
+def type_text(text, app=""):
+    """Put text into the focused window. app is its program name, if known."""
     if not text:
         return
+    if IS_WINDOWS and app and app.lower() not in WINDOWS_TERMINALS:
+        try:
+            import winclip
+            winclip.paste(text)
+            log.info("pasted %d chars into %s", len(text), app)
+            return
+        except Exception:
+            log.exception("paste failed, typing instead")
     # xdotool respects the active XKB layout (correct German umlauts, no y/z
     # swap on QWERTZ). Prefer it on X11 where it actually works. On Wayland,
     # native windows ignore XTEST so we must fall back to ydotool, which

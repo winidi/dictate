@@ -25,11 +25,15 @@ import core
 from i18n import tr
 
 DEAD_ZONE = 60   # pointer must move this far (px / mouse counts) before a segment counts
-RING = 130       # radius of the drawn circle
+RING = 170       # radius of the drawn circle
+LABEL_RADIUS = (DEAD_ZONE + RING) / 2   # labels sit between the centre and the rim
 
+# Clockwise from 12 o'clock, so four modes land on the four arrow keys.
 DEFAULT_MODES = [
     {"name": "English",   "instructions": "Translate the text into natural English."},
+    {"name": "Email",     "instructions": "Write the dictation as a complete email, everything in the language of the dictation (in German: \"Betreff:\", \"Hallo\"): a subject line, a greeting, the body. The body contains every fact, name, date and number from the dictation and nothing else. When the dictation says who to write to (\"schreib dem Peter, dass ich morgen komme\"), that person is the recipient: greet them by name and write the message itself to them (\"Hallo Peter, ich komme morgen.\"). Use a placeholder in square brackets, like [Name], for anything an email needs that was not said. The email ends with the last sentence of the body: closing and signature are added later. {signature}"},
     {"name": "Formatted", "instructions": "Structure the text: short paragraphs, bullet points or numbered steps where the content calls for it."},
+    {"name": "Short message", "instructions": "Write only the message the speaker wants to send, in the language of the dictation, in as few words as possible. Keep every fact, name, date, number and reason. Use short correct sentences; cut greetings, politeness and everything that repeats. Words like \"schreib dem Peter\" or \"sag der Anna\" name the recipient and stay out of the message, which speaks directly to that person. Examples: \"also ich wollte sagen dass ich heute leider später komme so gegen halb zehn weil die bahn ausgefallen ist\" -> \"Komme heute gegen halb zehn, die Bahn ist ausgefallen.\" | \"schreib dem jonas dass ich krank bin und er die präsentation am freitag übernehmen soll\" -> \"Ich bin krank. Übernimm bitte am Freitag die Präsentation.\" | \"sag der lena bitte ob sie mir bis montag die rechnung schicken kann\" -> \"Kannst du mir bis Montag die Rechnung schicken?\""},
 ]
 
 
@@ -37,7 +41,7 @@ def modes_for(cfg):
     """Configured modes, or the examples when nothing was ever saved."""
     m = cfg.get("polish_modes")
     if m is None:
-        m = DEFAULT_MODES
+        m = [{**x, "name": tr(x["name"])} for x in DEFAULT_MODES]
     return [x for x in m if (x.get("name") or "").strip()]
 
 
@@ -218,8 +222,8 @@ class PieOverlay(QWidget):
                 start = 90 - i * step + step / 2
                 p.drawPie(rect, int(start * 16), int(-step * 16))
                 mid = math.radians(i * step)
-                lx = c.x() + math.sin(mid) * RING * 0.66
-                ly = c.y() - math.cos(mid) * RING * 0.66
+                lx = c.x() + math.sin(mid) * LABEL_RADIUS
+                ly = c.y() - math.cos(mid) * LABEL_RADIUS
                 p.setPen(white)
                 p.drawText(QRectF(lx - 70, ly - 16, 140, 32), Qt.AlignmentFlag.AlignCenter, m["name"])
         # Centre: no movement, plain written text.
