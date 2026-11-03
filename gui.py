@@ -18,13 +18,14 @@ import numpy as np
 from PyQt6.QtCore import QBuffer, QIODevice, Qt, QObject, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QCursor, QIcon, QLinearGradient, QPainter, QPixmap
 from PyQt6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+    QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-    QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QSystemTrayIcon,
-    QTabWidget, QTextEdit, QVBoxLayout, QWidget,
+    QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QRadioButton,
+    QSpinBox, QSystemTrayIcon, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 from pynput import keyboard, mouse
 
+import capslock
 import core
 import i18n
 import pie
@@ -34,6 +35,27 @@ from i18n import tr
 # Arrow keys choose a pie-menu mode while the hotkey is held.
 ARROW_KEYS = {keyboard.Key.up: "up", keyboard.Key.down: "down",
               keyboard.Key.left: "left", keyboard.Key.right: "right"}
+
+# Presses that never cancel a recording: Super and Shift. HP's Copilot key is
+# a firmware macro that presses both before the key itself, and neither is a
+# deliberate "other key" on its own. A letter, Ctrl+C or a mouse click still
+# cancels as before. (Checked after the hotkey itself, so Shift and Super
+# keep working as hotkeys.)
+TOLERATED_KEYS = frozenset(core.KEY_MAP["super"]) | frozenset(core.KEY_MAP["shift"])
+
+SILENT_PEAK = 300    # out of 32768; below this a recording is silence, speech is in the thousands
+TOO_SHORT_S = 0.5    # a recording shorter than this cannot hold a word
+
+PROGRESS_STEPS = 1000   # progress bar resolution (0.1 %)
+
+
+def _show_fraction(bar, fraction):
+    """fraction 0..1 fills the bar; None makes it a busy indicator."""
+    if fraction is None:
+        bar.setRange(0, 0)
+    else:
+        bar.setRange(0, PROGRESS_STEPS)
+        bar.setValue(int(fraction * PROGRESS_STEPS))
 
 
 class PynputListener:
@@ -114,13 +136,16 @@ class Bridge(QObject):
     mode_changed = pyqtSignal(object)         # pie segment index or None
     error = pyqtSignal(str)
     notify = pyqtSignal(str, str, int)   # msg, urgency, timeout_ms
+    capslock_done = pyqtSignal(bool, str)   # managed flag, message: result of the worker thread
 
 
 class SettingsDialog(QDialog):
     # Bridge signals for the background download threads.
     _dl_status = pyqtSignal(str)
+    _dl_fraction = pyqtSignal(object)   # 0..1, or None while the total is unknown
     _dl_done = pyqtSignal(bool, str)
     _pl_status = pyqtSignal(str)
+    _pl_fraction = pyqtSignal(object)
     _pl_done = pyqtSignal(bool, str)
 
     def __init__(self, cfg, parent=None):
@@ -196,6 +221,23 @@ class SettingsDialog(QDialog):
         self.key_box.setCurrentIndex(max(i, 0))
         self.form.addRow(tr("Hotkey:"), self.key_box)
 
+        # Only offered with Caps Lock as hotkey: otherwise every press would
+        # also toggle Caps Lock and the typed text would come out in capitals.
+        self.capslock_box = QCheckBox(tr("Disable the Caps Lock function (use the key only for dictation)"))
+        self.capslock_box.setChecked(bool(self.cfg.get("disable_capslock", True)))
+        if capslock.is_available():
+            self.capslock_box.setToolTip(tr(
+                "While Dictate runs, the Caps Lock function is switched off in the desktop\n"
+                "(GNOME keyboard option caps:none), after turning Caps Lock itself off so it\n"
+                "cannot stay on. Only with direct access to the input devices (group 'input');\n"
+                "until then Caps Lock keeps working. Closing Dictate gives the function back."
+            ))
+        else:
+            self.capslock_box.setEnabled(False)
+            self.capslock_box.setToolTip(tr("Needs GNOME (the gsettings tool) to change the desktop setting."))
+        self.form.addRow("", self.capslock_box)
+        self.key_box.currentIndexChanged.connect(self._update_capslock_row)
+
         self.model_box = QComboBox()
         self.form.addRow(tr("Model:"), self.model_box)
 
@@ -207,6 +249,10 @@ class SettingsDialog(QDialog):
         self.local_download_btn = QPushButton()
         self.local_download_btn.clicked.connect(self.on_download_model)
         self.form.addRow("", self.local_download_btn)
+        self.local_progress = QProgressBar()
+        self.local_progress.setRange(0, PROGRESS_STEPS)
+        self.form.addRow("", self.local_progress)
+        self._downloading_local = False
         self.local_threads_box = QSpinBox()
         self.local_threads_box.setRange(1, cpu_max)
         self.local_threads_box.setValue(int(self.cfg.get("local_stt_num_threads", min(4, cpu_max))))
@@ -248,6 +294,20 @@ class SettingsDialog(QDialog):
         v1 = QVBoxLayout(page1)
         v1.addLayout(self.form)
         v1.addWidget(self.hint)
+        lbl = QLabel(tr("Names and terms — one per line (optional). Fixes words the recognizer "
+                        "spells by sound. \"Wrong -> Right\" replaces a word in every transcript:"))
+        lbl.setWordWrap(True)
+        v1.addWidget(lbl)
+        self.vocab_edit = QPlainTextEdit(cfg.get("vocabulary", "") or "")
+        self.vocab_edit.setPlaceholderText("Dirk Winiecki\nParakeet\nPost Gres -> PostgreSQL")
+        self.vocab_edit.setToolTip(tr(
+            "A term is sent to Groq and OpenAI as the Whisper prompt (the local model\n"
+            "has none) and given to the written-text model as its word list.\n"
+            "\"Wrong -> Right\" is replaced in every transcript, whole words, any case,\n"
+            "also offline. \"#\" starts a comment."
+        ))
+        self.vocab_edit.setMaximumHeight(90)
+        v1.addWidget(self.vocab_edit)
         v1.addStretch()
 
         self.tabs = QTabWidget()
@@ -260,12 +320,18 @@ class SettingsDialog(QDialog):
 
         # Wire the download-worker bridges, then sync UI to current provider.
         self._dl_status.connect(self.local_status_label.setText)
+        self._dl_fraction.connect(lambda f: _show_fraction(self.local_progress, f))
         self._dl_done.connect(self._on_download_done)
         self._pl_status.connect(self.pl_status_label.setText)
+        self._pl_fraction.connect(lambda f: _show_fraction(self.pl_progress, f))
         self._pl_done.connect(self._on_polish_download_done)
         self.refresh_model_box(self.cfg.get("model", core.DEFAULT_MODEL))
         self.on_provider_changed()
+        self._update_capslock_row()
         self._refresh_polish_status()
+
+    def _update_capslock_row(self):
+        self.form.setRowVisible(self.capslock_box, self.key_box.currentData() == "caps_lock")
 
     # ------------------------------------------------------------------ polishing
     def _build_polish_page(self):
@@ -362,15 +428,11 @@ class SettingsDialog(QDialog):
         self.pl_download_btn = QPushButton(tr("Download"))
         self.pl_download_btn.clicked.connect(self.on_download_polish)
         f.addRow("", self.pl_download_btn)
+        self.pl_progress = QProgressBar()
+        self.pl_progress.setRange(0, PROGRESS_STEPS)
+        f.addRow("", self.pl_progress)
+        self._downloading_polish = False
         v.addLayout(f)
-
-        lbl = QLabel(tr("Names and terms — one per line (optional). Fixes words the recognizer spells by sound:"))
-        lbl.setWordWrap(True)
-        v.addWidget(lbl)
-        self.pl_vocab_edit = QPlainTextEdit(cfg.get("polish_vocabulary", "") or "")
-        self.pl_vocab_edit.setPlaceholderText("Dirk Winiecki\nParakeet\nllama.cpp")
-        self.pl_vocab_edit.setMaximumHeight(70)
-        v.addWidget(self.pl_vocab_edit)
 
         v.addWidget(QLabel(tr("How you write — paste a few of your own texts (optional):")))
         self.pl_style_edit = QPlainTextEdit(cfg.get("polish_style", "") or "")
@@ -464,7 +526,6 @@ class SettingsDialog(QDialog):
             "polish_threads":  int(self.pl_threads_box.value()),
             "polish_timeout":  float(self.pl_timeout_box.value()),
             "polish_style":    self.pl_style_edit.toPlainText().strip(),
-            "polish_vocabulary": self.pl_vocab_edit.toPlainText().strip(),
             "polish_signature": self.pl_signature_edit.toPlainText().strip(),
             "polish_default_instructions": default,
             "polish_profiles": profiles,
@@ -486,6 +547,7 @@ class SettingsDialog(QDialog):
         for w in (self.pl_model_box, self.pl_device_box, self.pl_threads_box,
                   self.pl_status_label, self.pl_download_btn):
             self.pl_form.setRowVisible(w, not ext)
+        self.pl_form.setRowVisible(self.pl_progress, not ext and self._downloading_polish)
         if ext:
             return
         if not polish.supported():
@@ -570,17 +632,23 @@ class SettingsDialog(QDialog):
         self.pl_download_btn.setEnabled(False)
         self.pl_download_btn.setText(tr("Downloading..."))
         self.pl_status_label.setText(tr("Starting download..."))
+        self._downloading_polish = True
+        _show_fraction(self.pl_progress, None)   # busy until the first byte count arrives
+        self.pl_form.setRowVisible(self.pl_progress, True)
         pc = self._polish_cfg()
         threading.Thread(target=self._polish_download_worker, args=(pc,), daemon=True).start()
 
     def _polish_download_worker(self, pc):
         try:
-            polish.download_all(pc, progress_cb=lambda m: self._pl_status.emit(m))
+            polish.download_all(pc, progress_cb=lambda m: self._pl_status.emit(m),
+                                fraction_cb=lambda f: self._pl_fraction.emit(f))
             self._pl_done.emit(True, tr("Installed."))
         except Exception as e:
             self._pl_done.emit(False, tr("Download failed: {err}", err=e))
 
     def _on_polish_download_done(self, ok, msg):
+        self._downloading_polish = False
+        self.pl_form.setRowVisible(self.pl_progress, False)
         self.pl_status_label.setText(msg)
         self.pl_download_btn.setEnabled(True)
         self.pl_download_btn.setText(tr("Re-download") if ok else tr("Retry download"))
@@ -611,6 +679,7 @@ class SettingsDialog(QDialog):
         self.form.setRowVisible(self.test_btn, not is_local)
         self.form.setRowVisible(self.local_status_label, is_local)
         self.form.setRowVisible(self.local_download_btn, is_local)
+        self.form.setRowVisible(self.local_progress, is_local and self._downloading_local)
         self.form.setRowVisible(self.local_threads_box, is_local)
 
         # Hint text at the bottom of the dialog.
@@ -657,17 +726,23 @@ class SettingsDialog(QDialog):
         self.local_download_btn.setEnabled(False)
         self.local_download_btn.setText(tr("Downloading..."))
         self.local_status_label.setText(tr("Starting download..."))
+        self._downloading_local = True
+        _show_fraction(self.local_progress, None)   # busy until the first byte count arrives
+        self.form.setRowVisible(self.local_progress, True)
         threading.Thread(target=self._download_worker, daemon=True).start()
 
     def _download_worker(self):
         try:
             import local_stt
-            local_stt.download_model(progress_cb=lambda m: self._dl_status.emit(m))
+            local_stt.download_model(progress_cb=lambda m: self._dl_status.emit(m),
+                                     fraction_cb=lambda f: self._dl_fraction.emit(f))
             self._dl_done.emit(True, tr("Installed."))
         except Exception as e:
             self._dl_done.emit(False, tr("Download failed: {err}", err=e))
 
     def _on_download_done(self, ok, msg):
+        self._downloading_local = False
+        self.form.setRowVisible(self.local_progress, False)
         self.local_status_label.setText(msg)
         self.local_download_btn.setEnabled(True)
         self.local_download_btn.setText(tr("Re-download model") if ok else tr("Retry download"))
@@ -714,8 +789,10 @@ class SettingsDialog(QDialog):
             "openai_api_key":        self._keys.get("openai", ""),
             "mode":                  self.mode_box.currentData(),
             "key":                   self.key_box.currentData(),
+            "disable_capslock":      self.capslock_box.isChecked(),
             "model":                 self.model_box.currentData(),
             "threshold":             float(self.threshold_box.value()),
+            "vocabulary":            self.vocab_edit.toPlainText().strip(),
             "local_stt_num_threads": int(self.local_threads_box.value()),
             "yorik_url":             self.yorik_url_edit.text().strip() or core.DEFAULT_CONFIG["yorik_url"],
             "yorik_token":           self._keys.get("yorik", ""),
@@ -845,6 +922,8 @@ class MainWindow(QMainWindow):
         self.bridge.mode_changed.connect(self.on_mode_changed)
         self.bridge.error.connect(self.on_error)
         self.bridge.notify.connect(self.on_notify)
+        self.bridge.capslock_done.connect(self._on_capslock_done)
+        self._capslock_lock = threading.Lock()   # one desktop change at a time
         # Pie menu: the tracker runs on listener threads, the overlay on this one.
         self.tracker = pie.GestureTracker(lambda seg: self.bridge.mode_changed.emit(seg))
         self._pie = None
@@ -890,10 +969,29 @@ class MainWindow(QMainWindow):
         self.last = QTextEdit()
         self.last.setReadOnly(True)
         self.last.setMaximumHeight(110)
+        # No fixed background: a dark desktop theme draws light text, which
+        # vanished on the former #fafafa. The palette colours fit both themes.
         self.last.setStyleSheet(
-            "QTextEdit { background: #fafafa; border: 1px solid #ddd; border-radius: 6px; padding: 6px; }"
+            "QTextEdit { border: 1px solid palette(mid); border-radius: 6px; padding: 6px; }"
         )
         v.addWidget(self.last)
+
+        # How the text reaches the focused window; applies to the next dictation.
+        output_row = QHBoxLayout()
+        self.output_label = QLabel(tr("Insert text by:"))
+        output_row.addWidget(self.output_label)
+        self.paste_radio = QRadioButton(tr("Paste"))
+        self.type_radio = QRadioButton(tr("Type keys"))
+        self.output_group = QButtonGroup(self)
+        self.output_group.addButton(self.paste_radio)
+        self.output_group.addButton(self.type_radio)
+        (self.type_radio if self.cfg.get("output_method") == "type" else self.paste_radio).setChecked(True)
+        self.paste_radio.toggled.connect(self.on_output_method_changed)
+        output_row.addWidget(self.paste_radio)
+        output_row.addWidget(self.type_radio)
+        output_row.addStretch()
+        v.addLayout(output_row)
+        self._set_output_tooltips()
 
         v.addStretch()
 
@@ -926,11 +1024,95 @@ class MainWindow(QMainWindow):
         self.set_status("ready", tr("Ready"))
         self.update_info()
         self.start_listener()
+        # Caps Lock gets its function back when Dictate closes (a killed
+        # process skips this; the next start repairs it).
+        QApplication.instance().aboutToQuit.connect(self._release_capslock)
         self._preload_local_if_needed()
         self._start_polish_if_needed()
 
         if not core.provider_key(self.cfg):
             QTimer.singleShot(250, self.first_run)
+
+    # ------------------------------------------------------------------ output method
+    def _set_output_tooltips(self):
+        self.paste_radio.setToolTip(tr(
+            "Puts the text on the clipboard, presses the paste shortcut of the focused\n"
+            "window (Ctrl+Shift+V in terminals) and restores your clipboard afterwards.\n"
+            "One key press for the whole text, so long dictations arrive at once.\n"
+            "Works on Windows and X11; on Wayland the text is typed instead."
+        ))
+        self.type_radio.setToolTip(tr(
+            "Sends the text as key presses, one per character. Leaves the clipboard\n"
+            "alone, but long text can take seconds to arrive in some terminals."
+        ))
+
+    def on_output_method_changed(self):
+        method = "type" if self.type_radio.isChecked() else "paste"
+        if method != self.cfg.get("output_method"):
+            self.cfg["output_method"] = method
+            core.save_config(self.cfg)
+
+    # ------------------------------------------------------------------ caps lock
+    def _listener_is_evdev(self):
+        try:
+            import evdev_listener
+        except Exception:
+            return False
+        return isinstance(self.listener, evdev_listener.Listener)
+
+    def _apply_capslock_setting(self):
+        """Caps Lock as hotkey with "disable" ticked: switch its function off in
+        the desktop, but only while the evdev listener reads the raw key.
+        Under the pynput fallback the hotkey would stop working altogether, so
+        Caps Lock is left alone and the user told to log out and in.
+
+        gsettings, xset and xdotool can hang, so the work runs on a worker
+        thread; the result comes back through a signal."""
+        wanted = self.cfg.get("key") == "caps_lock" and bool(self.cfg.get("disable_capslock", True))
+        if not wanted and not self.cfg.get("capslock_managed"):
+            return
+        evdev_active = self._listener_is_evdev()
+        notice = ""
+        if wanted and not evdev_active:
+            core.log.info("caps lock function kept: the listener has no direct access to the input devices")
+            notice = tr("Caps Lock keeps its function until Dictate can read the input devices (log out and in again)")
+        threading.Thread(target=self._capslock_worker, args=(wanted and evdev_active, notice),
+                         daemon=True).start()
+
+    def _capslock_worker(self, wanted, notice):
+        with self._capslock_lock:
+            try:
+                managed, message = capslock.apply(wanted, bool(self.cfg.get("capslock_managed")))
+            except Exception as e:
+                core.log.exception("caps lock handling failed")
+                managed, message = bool(self.cfg.get("capslock_managed")), f"Caps Lock: {e}"
+        self.bridge.capslock_done.emit(managed, message or notice)
+
+    def _on_capslock_done(self, managed, message):
+        if message:
+            core.log.warning(message)
+            threading.Thread(target=core.notify, args=(message, "normal", 6000), daemon=True).start()
+        if managed != bool(self.cfg.get("capslock_managed")):
+            self.cfg["capslock_managed"] = managed
+            core.save_config(self.cfg)
+
+    def _release_capslock(self):
+        """Give the Caps Lock function back if this app switched it off. Runs
+        while the app closes, so it stays synchronous, with short timeouts."""
+        if not self.cfg.get("capslock_managed"):
+            return
+        got_lock = self._capslock_lock.acquire(timeout=capslock.QUIT_TIMEOUT_S)
+        try:
+            managed, message = capslock.apply(False, True,
+                                              backend=capslock.Gsettings(timeout=capslock.QUIT_TIMEOUT_S))
+        finally:
+            if got_lock:
+                self._capslock_lock.release()
+        if message:
+            core.log.warning(message)
+        if not managed:
+            self.cfg["capslock_managed"] = False
+            core.save_config(self.cfg)
 
     def _start_polish_if_needed(self):
         """Bring llama-server up in the background so the first polish does
@@ -1002,6 +1184,10 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Dictate")
         self.settings_btn.setText(tr("Settings"))
         self.last_label.setText(tr("Last transcription:"))
+        self.output_label.setText(tr("Insert text by:"))
+        self.paste_radio.setText(tr("Paste"))
+        self.type_radio.setText(tr("Type keys"))
+        self._set_output_tooltips()
         if self.tray:
             self.a_show.setText(tr("Show window"))
             self.a_polish.setText(tr("Written text (polish)"))
@@ -1041,6 +1227,8 @@ class MainWindow(QMainWindow):
             try:
                 if k in self._target_keys:
                     self.bridge.hotkey_press.emit()
+                elif k in TOLERATED_KEYS:
+                    return   # Super / Shift alone, e.g. from the Copilot macro: not a cancel
                 elif self.tracker.active and k in ARROW_KEYS:
                     # Picks a pie-menu mode instead of cancelling the recording.
                     self.tracker.set_segment(pie.segment_for_arrow(ARROW_KEYS[k], self.tracker.n))
@@ -1066,6 +1254,7 @@ class MainWindow(QMainWindow):
                 self.tracker.rel_move(a, b)
 
         self.listener = _make_listener(on_press, on_release, on_move)
+        self._apply_capslock_setting()
 
     def restart_listener(self):
         if self.listener:
@@ -1227,17 +1416,27 @@ class MainWindow(QMainWindow):
         try:
             text = core.transcribe(audio, self.cfg)
         except Exception as e:
+            # A network error, HTTP 5xx or a recognizer that failed to load:
+            # the case where the audio matters most, so it is kept too (#12).
             core.log.exception("transcribe failed: %.1fs audio, peak %d", secs, peak)
-            self.bridge.error.emit(str(e))
+            kept = ""
+            if peak >= SILENT_PEAK:
+                core.keep_failed_audio(audio)
+                kept = tr(" — recording kept in {dir}", dir=core.FAILED_DIR)
+            self.bridge.error.emit(f"{e}{kept}")
             return
         core.log.info("transcribed %.1fs audio, peak %d, %d chars in %.1fs",
                       secs, peak, len(text or ""), time.monotonic() - t0)
         if not text:
             # Peak is out of 32768; a live mic with speech is in the thousands.
-            why = tr("microphone was silent") if peak < 300 else tr("no speech recognised")
-            if peak >= 300:
+            if secs < TOO_SHORT_S:
+                why = tr("too short")
+            elif peak < SILENT_PEAK:
+                why = tr("microphone was silent")
+            else:
+                why = tr("no speech recognised")
                 core.keep_failed_audio(audio)
-            self.bridge.error.emit(tr("Nothing transcribed ({secs}s) — {why}", secs=f"{secs:.0f}", why=why))
+            self.bridge.error.emit(tr("Nothing transcribed ({secs}s) — {why}", secs=f"{secs:.1f}", why=why))
             return
         raw = text
         mode_name = (mode or {}).get("name", "")
@@ -1260,7 +1459,8 @@ class MainWindow(QMainWindow):
         if text:
             # Only Windows chooses by program (paste or keystrokes).
             app = polish.active_window()[0] if core.IS_WINDOWS else ""
-            threading.Thread(target=core.type_text, args=(text, app), daemon=True).start()
+            method = self.cfg.get("output_method", "paste")
+            threading.Thread(target=core.type_text, args=(text, app, method), daemon=True).start()
             if raw and raw != text:
                 tag = f" [{mode_name}]" if mode_name else ""
                 self.last.setPlainText(text + "\n\n" + tr("— as spoken{tag}: {raw}", tag=tag, raw=raw))

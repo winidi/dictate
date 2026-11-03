@@ -5,12 +5,23 @@ key events to XWayland's XRecord). Reading /dev/input/event* directly via
 evdev works on both Wayland and Xorg regardless of window focus, so we
 prefer it over pynput's Listener whenever the input group grants access.
 
+The Microsoft Copilot key arrives in one of two ways and both are reported
+to the callback as the single core.COPILOT_KEY sentinel:
+  - as KEY_ASSISTANT (0x247) on standards-compliant keyboards (kernel >= 6.6);
+  - as the firmware macro Super+Shift+F23 on HP laptops (verified on a ZBook
+    Ultra G1a), which have no KEY_ASSISTANT at all. F23 lives on no physical
+    key of a normal keyboard, so F23 while Super and Shift are down is the
+    Copilot key. The Super and Shift events themselves pass through as usual;
+    the GUI does not let them cancel a recording.
+
 Requires:
   - python3-evdev
   - membership in group `input` (sudo usermod -a -G input $USER; re-login)
 """
 import glob
+import grp
 import os
+import pwd
 import select
 import sys
 import threading
@@ -18,6 +29,12 @@ import threading
 import evdev
 from evdev import ecodes
 from pynput import keyboard
+
+from core import COPILOT_KEY
+
+KEY_ASSISTANT = 0x247   # spelled out: python3-evdev may predate the symbol
+KEY_F23 = getattr(ecodes, "KEY_F23", 0xC1)
+_HP_COPILOT_MODS = {ecodes.KEY_LEFTMETA, ecodes.KEY_LEFTSHIFT}
 
 _KEY_MAP = {
     ecodes.KEY_LEFTCTRL:   keyboard.Key.ctrl_l,
@@ -44,6 +61,7 @@ _KEY_MAP = {
 }
 for _i in range(1, 13):
     _KEY_MAP[getattr(ecodes, f"KEY_F{_i}")] = getattr(keyboard.Key, f"f{_i}")
+_KEY_MAP[KEY_ASSISTANT] = COPILOT_KEY
 
 # Mouse-side buttons (thumb rocker + gesture button on Logitech MX etc).
 # Exposed as ("mouse", name) tuples so they slot into core.KEY_MAP as sentinels
@@ -72,7 +90,8 @@ def _find_keyboards():
     """
     devs = []
     interesting_side_btns = {ecodes.BTN_SIDE, ecodes.BTN_EXTRA,
-                             ecodes.BTN_FORWARD, ecodes.BTN_BACK, ecodes.BTN_TASK}
+                             ecodes.BTN_FORWARD, ecodes.BTN_BACK, ecodes.BTN_TASK,
+                             KEY_ASSISTANT}   # a device that only carries the Copilot key
     for path in sorted(glob.glob("/dev/input/event*")):
         try:
             d = evdev.InputDevice(path)
@@ -103,6 +122,46 @@ def _find_keyboards():
     return devs
 
 
+def no_access_reason():
+    """Why no input device could be read: the cause first, the remedy second.
+
+    A group change reaches only sessions started afterwards, so being in
+    group `input` in the group database is not the same as this session
+    having it."""
+    generic = "no readable keyboard devices in /dev/input"
+    try:
+        group = grp.getgrnam("input")
+        user = pwd.getpwuid(os.getuid())
+    except KeyError:
+        return generic
+    if group.gr_gid in os.getgroups():
+        return generic
+    if user.pw_name in group.gr_mem or user.pw_gid == group.gr_gid:
+        return (f"{user.pw_name} is in group `input`, but this login session started before "
+                "that, so /dev/input cannot be read yet. Log out and log in again (or reboot)")
+    return (f"{user.pw_name} is not in group `input`, which is needed to read /dev/input. "
+            f"Run: sudo usermod -a -G input {user.pw_name}, then log out and log in again")
+
+
+def translate(ev, held):
+    """The key a pressed or released EV_KEY event stands for, or None when the
+    event is to be dropped. `held` is the set of codes currently down; it is
+    updated here and exists to recognise HP's Copilot macro (Super+Shift+F23)."""
+    if ev.value == 1:
+        held.add(ev.code)
+    else:
+        held.discard(ev.code)
+    if ev.code == KEY_F23:
+        if ev.value == 1:
+            # The press counts only as the Copilot key; a bare F23 does not exist
+            # on a normal keyboard and must never be mistaken for the hotkey.
+            return COPILOT_KEY if _HP_COPILOT_MODS <= held else None
+        # HP does not promise that F23 comes up before Super/Shift, so the
+        # release is always the Copilot release.
+        return COPILOT_KEY
+    return _KEY_MAP.get(ev.code) or _OtherKey(ev.code)
+
+
 class Listener:
     """Drop-in replacement for pynput.keyboard.Listener."""
 
@@ -120,16 +179,14 @@ class Listener:
     def start(self):
         self._devices = _find_keyboards()
         if not self._devices:
-            raise RuntimeError(
-                "no readable keyboard devices in /dev/input "
-                "(user not in group `input`? run: sudo usermod -a -G input $USER, then re-login)"
-            )
+            raise RuntimeError(no_access_reason())
         self._stop_r, self._stop_w = os.pipe()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def _run(self):
         fds = [self._stop_r] + [d.fd for d in self._devices]
+        held = set()   # codes currently down, across all keyboards (for the Copilot macro)
         try:
             while True:
                 r, _, _ = select.select(fds, [], [])
@@ -154,7 +211,9 @@ class Listener:
                                 continue
                             if ev.value == 2:
                                 continue  # auto-repeat; pynput hides this too
-                            key = _KEY_MAP.get(ev.code) or _OtherKey(ev.code)
+                            key = translate(ev, held)
+                            if key is None:
+                                continue
                             cb = self._on_press if ev.value == 1 else self._on_release
                             if cb:
                                 try:

@@ -304,4 +304,68 @@ DE = {
     "model returned nothing": "Modell hat nichts geliefert",
     "llama-server exited with {code} (see {log})": "llama-server hat sich mit {code} beendet (siehe {log})",
     "polishing runtime or model not installed": "Laufzeit oder Modell für die Aufbereitung nicht installiert",
+
+    # --- Insert text by paste or key presses (#14) --------------------------
+    "Insert text by:": "Text einfügen per:",
+    "Paste": "Einfügen",
+    "Type keys": "Tasten tippen",
+    "Puts the text on the clipboard, presses the paste shortcut of the focused\n"
+    "window (Ctrl+Shift+V in terminals) and restores your clipboard afterwards.\n"
+    "One key press for the whole text, so long dictations arrive at once.\n"
+    "Works on Windows and X11; on Wayland the text is typed instead.":
+        "Legt den Text in die Zwischenablage, drückt im Zielfenster die Einfügen-\n"
+        "Tastenkombination (Strg+Umschalt+V in Terminals) und stellt die Zwischenablage\n"
+        "danach wieder her. Ein Tastendruck für den ganzen Text, lange Diktate kommen\n"
+        "auf einmal an. Geht unter Windows und X11; unter Wayland wird getippt.",
+    "Sends the text as key presses, one per character. Leaves the clipboard\n"
+    "alone, but long text can take seconds to arrive in some terminals.":
+        "Schickt den Text als Tastendrücke, einen je Zeichen. Lässt die Zwischenablage\n"
+        "in Ruhe, aber langer Text braucht in manchen Terminals Sekunden.",
+    "Pasting failed ({err})": "Einfügen fehlgeschlagen ({err})",
+    "Pasting is not possible here ({err}); typing the text instead":
+        "Einfügen geht hier nicht ({err}); der Text wird stattdessen getippt",
+    "Typing failed: neither xdotool nor ydotool is installed":
+        "Tippen fehlgeschlagen: weder xdotool noch ydotool ist installiert",
+
+    # --- Vocabulary ----------------------------------------------------------
+    "Names and terms — one per line (optional). Fixes words the recognizer "
+    "spells by sound. \"Wrong -> Right\" replaces a word in every transcript:":
+        "Namen und Begriffe — einer pro Zeile (optional). Korrigiert Wörter, die die "
+        "Erkennung nach Gehör schreibt. \"Falsch -> Richtig\" ersetzt ein Wort in jeder Erkennung:",
+    "A term is sent to Groq and OpenAI as the Whisper prompt (the local model\n"
+    "has none) and given to the written-text model as its word list.\n"
+    "\"Wrong -> Right\" is replaced in every transcript, whole words, any case,\n"
+    "also offline. \"#\" starts a comment.":
+        "Ein Begriff geht an Groq und OpenAI als Whisper-Prompt (das lokale Modell\n"
+        "hat keinen) und an das Schrifttext-Modell als Wortliste.\n"
+        "\"Falsch -> Richtig\" wird in jeder Erkennung ersetzt, ganze Wörter, Groß-/\n"
+        "Kleinschreibung egal, auch offline. \"#\" beginnt einen Kommentar.",
+
+    # --- Caps Lock as hotkey (#10) -------------------------------------------
+    "Disable the Caps Lock function (use the key only for dictation)":
+        "Feststelltaste abschalten (die Taste nur zum Diktieren nutzen)",
+    "While Dictate runs, the Caps Lock function is switched off in the desktop\n"
+    "(GNOME keyboard option caps:none), after turning Caps Lock itself off so it\n"
+    "cannot stay on. Only with direct access to the input devices (group 'input');\n"
+    "until then Caps Lock keeps working. Closing Dictate gives the function back.":
+        "Solange Dictate läuft, ist die Feststellfunktion im Desktop abgeschaltet\n"
+        "(GNOME-Tastaturoption caps:none), nachdem die Feststelltaste selbst ausgeschaltet\n"
+        "wurde, damit sie nicht an bleibt. Nur mit direktem Zugriff auf die Eingabegeräte\n"
+        "(Gruppe 'input'); bis dahin arbeitet die Feststelltaste normal. Beim Beenden\n"
+        "von Dictate kommt die Funktion zurück.",
+    "Needs GNOME (the gsettings tool) to change the desktop setting.":
+        "Braucht GNOME (das Werkzeug gsettings), um die Desktop-Einstellung zu ändern.",
+    "Caps Lock keeps its function until Dictate can read the input devices (log out and in again)":
+        "Die Feststelltaste behält ihre Funktion, bis Dictate die Eingabegeräte lesen kann (ab- und wieder anmelden)",
+
+    # --- Failed recordings, download progress --------------------------------
+    "too short": "zu kurz",
+    " — recording kept in {dir}": " — Aufnahme behalten in {dir}",
+    "Model": "Modell",
+    "{n} s": "{n} s",
+    "{m} min {s} s": "{m} min {s} s",
+    "{h} h {m} min": "{h} h {m} min",
+    "{done} MB downloaded": "{done} MB heruntergeladen",
+    "calculating time left ...": "Restzeit wird berechnet ...",
+    "about {t} left": "noch etwa {t}",
 }

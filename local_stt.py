@@ -16,6 +16,11 @@ from i18n import tr
 # huggingface_hub warns on Windows that its cache cannot use symlinks; we
 # download straight into MODEL_DIR, so the cache layout does not matter.
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+# Its progress bars go nowhere useful: the GUI watches the folder instead,
+# and under pythonw.exe there is no console to draw them on (issue #20).
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+# The hub gives up after 10 s without data by default, which a slow link exceeds.
+os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "60")
 
 MODEL_DIR = core.DATA_DIR / "models" / "parakeet-primeline-onnx"
 MODEL_REPO = "flozen1981/parakeet-primeline-onnx"
@@ -28,6 +33,7 @@ MODEL_FILES = [
     "joiner.int8.onnx",
     "tokens.txt",
 ]
+MODEL_BYTES = 650_000_000   # used for the progress bar when the hub cannot be asked for the sizes
 TARGET_SR = 16000
 DEFAULT_THREADS = 4
 TARGET_PEAK = 0.5   # quiet pieces are raised to this peak before decoding
@@ -38,11 +44,24 @@ def model_installed() -> bool:
     return all((MODEL_DIR / f).exists() for f in MODEL_FILES)
 
 
-def download_model(progress_cb: Optional[Callable[[str], None]] = None) -> None:
+def model_size_bytes() -> int:
+    """Total size of the model files, from the hub; MODEL_BYTES when offline."""
+    try:
+        from huggingface_hub import HfApi
+        infos = HfApi().get_paths_info(MODEL_REPO, MODEL_FILES, revision=MODEL_REVISION)
+        total = sum(getattr(i, "size", 0) or 0 for i in infos)
+        return total or MODEL_BYTES
+    except Exception:
+        return MODEL_BYTES
+
+
+def download_model(progress_cb: Optional[Callable[[str], None]] = None,
+                   fraction_cb: Optional[Callable[[Optional[float]], None]] = None) -> None:
     """Download the pinned model revision from HuggingFace into MODEL_DIR.
 
-    Blocks. Raises RuntimeError on failure. `progress_cb(msg)` gets short
-    status strings for GUI display.
+    Blocks. Raises RuntimeError on failure. `progress_cb(msg)` gets status
+    lines with bytes, speed and time left; `fraction_cb(0..1 or None)` feeds a
+    progress bar.
     """
     try:
         from huggingface_hub import snapshot_download
@@ -53,11 +72,16 @@ def download_model(progress_cb: Optional[Callable[[str], None]] = None) -> None:
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     if progress_cb:
         progress_cb(tr("Downloading model (~640 MB, one-time) ..."))
-    snapshot_download(
-        repo_id=MODEL_REPO,
-        revision=MODEL_REVISION,
-        local_dir=str(MODEL_DIR),
-        allow_patterns=MODEL_FILES,
+    meter = core.ProgressMeter(tr("Model"), progress_cb, fraction_cb)
+    core.run_watching_folder(
+        lambda: snapshot_download(
+            repo_id=MODEL_REPO,
+            revision=MODEL_REVISION,
+            local_dir=str(MODEL_DIR),
+            allow_patterns=MODEL_FILES,
+            etag_timeout=60,
+        ),
+        MODEL_DIR, model_size_bytes(), meter,
     )
     if progress_cb:
         progress_cb(tr("Model downloaded."))

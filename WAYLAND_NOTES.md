@@ -30,7 +30,7 @@ Between 00:13 and 01:16 there was **no Xorg NVIDIA module installed**. Any GDM r
 
 **Fix:** use `ydotool` instead, which writes to `/dev/uinput`. That is a kernel interface below both X and Wayland, so any focused window receives the keystrokes. Ubuntu 24.04's `ydotool` 0.1.8 works standalone (no `ydotoold` daemon needed), just warns about missing daemon. `/dev/uinput` is accessible when the user is in the `input` group (the ACL is granted automatically by `systemd-logind`).
 
-`core.type_text` tries `ydotool` first and falls back to `xdotool` if the binary is missing.
+`core.type_text` on Wayland tries `wtype` first (it speaks the virtual-keyboard protocol and sends keysyms, so umlauts and QWERTZ come out right on KDE and wlroots compositors), then `ydotool` (GNOME has no virtual-keyboard protocol; `ydotool` writes US key positions, so `y`/`z` swap and umlauts break on a German layout), then `xdotool`. ydotool 1.x (Arch, newer Debian) needs `systemctl --user enable --now ydotool.service`. On X11 the default is a paste through the clipboard (`xclip`/`xsel` + `xdotool key`), see "Insert text by" in the README.
 
 ## Bug 3 — `sd.InputStream.stop()` freezes the Qt main thread
 

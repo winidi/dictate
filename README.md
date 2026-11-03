@@ -8,7 +8,9 @@ Hold a hotkey, speak, release — the transcribed text is typed wherever your cu
 
 - Push-to-talk or tap-to-toggle modes
 - System tray icon with status (ready / recording / transcribing)
-- Hotkey bound to any function key, modifier (Ctrl / Alt / Shift), or Logitech-style mouse side button
+- Hotkey bound to any function key, modifier (Ctrl / Alt / Shift), Caps Lock (its own function switched off while Dictate runs), the Copilot key, or a Logitech-style mouse side button
+- Text arrives as a **paste** (one key press, the clipboard is restored afterwards) or as **typed keys**, switchable in the main window
+- **Vocabulary**: names and terms the recognizer spells by sound, sent to the cloud models as a prompt; `Wrong -> Right` lines are replaced in every transcript, also offline
 - Four transcription backends:
   - **Yorik** (home server) — sends the clip to a Yorik install on the LAN (`/v1/audio/transcriptions`, personal API token from Yorik's Settings → API tokens). One Parakeet for every device in the house; this machine carries no model.
   - **Groq** cloud — `whisper-large-v3-turbo`, `whisper-large-v3`
@@ -17,13 +19,13 @@ Hold a hotkey, speak, release — the transcribed text is typed wherever your cu
 - Optional minimum-hold threshold to ignore accidental modifier presses
 - **Optional "written text" pass** — a local Gemma 4 model (via llama.cpp) turns the spoken transcript into written text: filler words and false starts go, punctuation and spelling get fixed, your wording and tone stay. It can match your own writing style and adapt to the window the text goes into. Off by default, runtime and model are downloaded on demand, nothing leaves the machine
 - API keys stored locally in `~/.config/dictate/config.json` (mode 600) — `%APPDATA%\Dictate\config.json` on Windows
-- **Wayland-compatible**: uses `evdev` for key capture and `ydotool` for typing, falls back to `pynput`/`xdotool` on X11
+- **Wayland-compatible**: uses `evdev` for key capture and `wtype` (KDE, wlroots) or `ydotool` (GNOME) for typing, falls back to `pynput`/`xdotool` on X11
 - **Windows**: same features, same four backends. Hotkeys come from a low-level keyboard hook plus a mouse hook (`pynput`), text arrives as a paste (the clipboard is restored afterwards and the dictation stays out of the clipboard history), in terminals as `SendInput` Unicode keystrokes, so umlauts and ß arrive intact on any layout. Notifications come from the tray icon, `install.ps1` puts Dictate in the Start Menu. macOS runs on the same code path but is untested.
 
 ## Requirements
 
-- Linux (X11 or Wayland — see the Wayland section below) or Windows 10/11
-- Python 3.10+
+- Linux (X11 or Wayland — see the Wayland section below; Debian/Ubuntu or Arch family) or Windows 10/11. macOS runs the same code path but is untested. WSL is not supported: it has no microphone and no desktop to type into
+- Python 3.10+ (on Windows the setup kit in `windows-setup/` brings its own copy, nothing has to be installed)
 - A microphone that PipeWire/PulseAudio (Linux) or Windows can see
 - Either a Groq API key (free tier at [console.groq.com](https://console.groq.com)), an OpenAI API key — or nothing at all: the Local provider needs no key and no network
 
@@ -37,12 +39,12 @@ cd dictate
 ./install.sh
 ```
 
-The installer adds:
+The installer detects apt or pacman (`--distro=debian|arch` overrides) and adds:
 
-- system packages: `xdotool`, `ydotool`, `python3-evdev`, `libnotify-bin`, `python3-pip`, `libxcb-cursor0`, `libportaudio2`
-- Python packages: `PyQt6`, `sounddevice`, `pynput`, `requests`, `numpy`, `sherpa-onnx`, `soundfile`, `huggingface_hub`
+- system packages: `xdotool`, `wtype`, `ydotool`, `xclip`, `python3-evdev`, `libnotify-bin`, `python3-venv`, `libxcb-cursor0`, `libportaudio2` (the pacman names on Arch); `ydotool.service` is enabled where the unit exists (ydotool 1.x needs its daemon)
+- a virtual environment in `.venv` next to the scripts with the Python packages from `requirements.txt` (`PyQt6`, `sounddevice`, `pynput`, `requests`, `numpy`, `sherpa-onnx`, `soundfile`, `huggingface_hub`). The venv sees the system packages, so the distro's `python3-evdev` is used and nothing is installed into the system Python
 - membership in group `input` (needed for evdev on Wayland)
-- a desktop entry so **Dictate** shows up in your app menu
+- a desktop entry so **Dictate** shows up in your app menu; it starts `.venv/bin/python gui.py`
 
 The Parakeet ONNX model itself (~640 MB) is *not* downloaded by `install.sh` — the download is triggered on demand from Settings when you first pick the local backend, so users who only want cloud transcription don't pay the disk cost.
 
@@ -75,14 +77,18 @@ In **Settings** you can change:
 - **Language** — the interface in English or German (*Deutsch*); the default follows the system language. Switching applies at once
 - **Provider** — Groq, OpenAI, or Local (Parakeet DE)
 - **Mode** — push-to-talk (hold) or toggle (tap to start / tap to stop)
-- **Hotkey** — F1–F12, modifier keys (Ctrl / Alt / Shift / Super), or one of the Logitech-style mouse side buttons (`MOUSE BACK`, `MOUSE FORWARD`, `MOUSE SIDE`, `MOUSE EXTRA`, `MOUSE TASK`). On Linux the mouse buttons need the evdev backend (i.e. `input`-group setup complete). On Windows the two thumb buttons arrive as `MOUSE BACK` / `MOUSE FORWARD` (`MOUSE SIDE` / `MOUSE EXTRA` are the same two buttons under their Linux names); `MOUSE TASK` is Linux-only. Avoid the Super / Windows key on Windows: releasing it opens the Start menu.
+- **Hotkey** — F1–F12, modifier keys (Ctrl / Alt / Shift / Super), Caps Lock, the Microsoft **Copilot** key, or one of the Logitech-style mouse side buttons (`MOUSE BACK`, `MOUSE FORWARD`, `MOUSE SIDE`, `MOUSE EXTRA`, `MOUSE TASK`). On Linux the Copilot key and the mouse buttons need the evdev backend (i.e. `input`-group setup complete). On Windows the two thumb buttons arrive as `MOUSE BACK` / `MOUSE FORWARD` (`MOUSE SIDE` / `MOUSE EXTRA` are the same two buttons under their Linux names); `MOUSE TASK` and `COPILOT` are Linux-only. Avoid the Super / Windows key on Windows: releasing it opens the Start menu.
+  - **Caps Lock**: Dictate only listens to the key, so the desktop would still toggle Caps Lock on every press and the text would come out in capitals. With *Disable the Caps Lock function* (shown below the hotkey, ticked by default) Dictate adds the GNOME keyboard option `caps:none` while it runs and removes it again on quit; other keyboard options are untouched, and a `caps:none` you set yourself stays. Needs GNOME (`gsettings`) and the evdev backend; under the pynput fallback Caps Lock keeps working and Dictate says so. Other desktops: `setxkbmap -option caps:none` by hand
+  - **Copilot**: two firmware flavours are handled. Standards-compliant keyboards send `KEY_ASSISTANT` (kernel 6.6 or newer); HP laptops send the shortcut Super+Shift+F23, which Dictate folds into a single Copilot press, and the Super and Shift presses do not cancel the recording. `sudo evtest` shows which one your keyboard sends
+- **Insert text by** (main window) — **Paste** puts the text on the clipboard, presses the paste shortcut of the focused window (Ctrl+Shift+V in terminals, Shift+Insert in xterm, Ctrl+V elsewhere; on Windows terminals get keystrokes instead) and restores the previous clipboard text half a second later. One key press instead of one per character, so a long dictation arrives at once, also in a slow terminal. **Type keys** sends one key press per character and leaves the clipboard alone. Pasting works on Windows and X11 (needs `xdotool`, `xprop` and `xclip` or `xsel`); on Wayland and macOS the text is typed and a notification says so once. The log notes the method and how long it took (`output via paste: 369 chars in 0.61s, ok`). A clipboard manager may keep a copy of the dictated text
 - **Model** — provider-specific list (cloud only)
 - **CPU threads** (Local only) — sherpa-onnx worker threads. 4 is the sweet spot on typical CPUs; more brings little benefit and starves the rest of the system.
 - **Min hold to send** — recordings shorter than this duration are discarded. The default is 2.0 s, so a short press of Ctrl / Alt / Shift does not produce text. Set it to 0 to keep every recording.
+- **Names and terms** — one per line. A term goes to Groq and OpenAI as the Whisper prompt (the local Parakeet has none) and to the written-text model as its word list. `Post Gres -> PostgreSQL` replaces the left side with the right one in every transcript, whole words, any case, with every provider. `#` starts a comment.
 
 ## Local (offline) transcription
 
-Selecting the **Local (Parakeet DE, CPU offline)** provider gives you German dictation with no network at all. On first selection Settings shows a "Download model (~640 MB)" button — the ONNX weights come from the pinned HuggingFace revision of [`flozen1981/parakeet-primeline-onnx`](https://huggingface.co/flozen1981/parakeet-primeline-onnx) and land in `~/.local/share/dictate/models/parakeet-primeline-onnx/` (Windows: `%LOCALAPPDATA%\Dictate\models\parakeet-primeline-onnx\`).
+Selecting the **Local (Parakeet DE, CPU offline)** provider gives you German dictation with no network at all. On first selection Settings shows a "Download model (~640 MB)" button — the ONNX weights come from the pinned HuggingFace revision of [`flozen1981/parakeet-primeline-onnx`](https://huggingface.co/flozen1981/parakeet-primeline-onnx) and land in `~/.local/share/dictate/models/parakeet-primeline-onnx/` (Windows: `%LOCALAPPDATA%\Dictate\models\parakeet-primeline-onnx\`). While it runs, a progress bar shows the bytes so far, the speed and the time left (`212 / 640 MB · 14.2 MB/s · about 30 s left`); the Gemma download for written text shows the same.
 
 Latency on a modest desktop CPU (measured on a Ryzen 9 workstation, 4 sherpa-onnx threads): about 50 ms decode for a 2 s clip, 100 ms for a 5 s clip. Model load + warmup happens once in the background at Dictate startup (~0.8 s). The same model runs unchanged on Windows through the `sherpa-onnx` wheel (measured: 0.6 s decode for a 9 s clip, 4.6 s load + warmup).
 
@@ -135,7 +141,7 @@ If a hotkey silently does nothing after install, the two things to check are:
 
 - Every recording leaves one line in `~/.local/state/dictate/dictate.log` (Windows: `%LOCALAPPDATA%\Dictate\dictate.log`) — length, peak level, characters, decode time, never the text. A failed one also raises a desktop notification: no audio frames, silent microphone (`peak` under 300 of 32768), nothing recognised, recording cancelled by another key or mouse button while the hotkey was held, or typing failed
 - The local Parakeet model cannot take more than 400 s in one pass; recordings over 90 s are split at a pause and decoded in pieces. Quiet audio is raised in level before decoding, and a piece that still comes back empty is retried in 20 s parts
-- A recording that had sound but produced no text is saved as a WAV in `~/.local/state/dictate/failed/` (Windows: `%LOCALAPPDATA%\Dictate\failed\`), so the failure can be replayed. This is your own voice on disk: only the newest 3 are kept, nothing is uploaded, and you can delete the folder at any time
+- A recording that had sound but produced no text, or whose transcription failed with an error (network down, HTTP 5xx, the local recognizer did not load), is saved as a WAV in `~/.local/state/dictate/failed/` (Windows: `%LOCALAPPDATA%\Dictate\failed\`), so the failure can be replayed. This is your own voice on disk: only the newest 3 are kept, nothing is uploaded, and you can delete the folder at any time. A recording under 0.5 s is reported as "too short", not as a silent microphone
 
 **Hotkey does nothing / status never changes to "Recording..."**
 
@@ -150,6 +156,9 @@ If a hotkey silently does nothing after install, the two things to check are:
 **Text is transcribed (visible in the "Last transcription" pane) but nothing appears in your target window**
 
 - `ydotool` is missing or `/dev/uinput` is not writable. Reinstall with `sudo apt install ydotool` and confirm `python3 -c 'import os; os.open("/dev/uinput", os.O_WRONLY)'` succeeds. On systemd systems membership in `input` should be enough
+- ydotool 1.x (Arch, newer Debian) needs its daemon: `systemctl --user enable --now ydotool.service`. Without it `ydotool type` fails and the notification says `Typing failed (ydotool exit 1)`
+- On a non-US layout under GNOME Wayland `ydotool` sends US key positions, so `y`/`z` swap and umlauts break. `wtype` types layout-correct text but GNOME does not implement the protocol it needs (KDE and wlroots compositors do). For GNOME the cleanest way around it is a model that produces correct text and **Paste** on X11; on GNOME Wayland there is no fix inside Dictate yet
+- Under X11 with **Paste** selected nothing arrives and the notification says pasting is not possible: install `xclip` (or `xsel`) and `xprop`
 
 **GUI freezes for a few seconds when releasing the hotkey**
 
@@ -189,6 +198,9 @@ The CLI variant only works on X11 for the reasons described above. Use `gui.py` 
   "key": "f9",
   "model": "whisper-large-v3-turbo",
   "threshold": 2.0,
+  "output_method": "paste",
+  "disable_capslock": true,
+  "vocabulary": "Dirk Winiecki\nParakeet\nPost Gres -> PostgreSQL",
   "local_stt_num_threads": 4,
   "polish_enabled": false,
   "polish_backend": "builtin",
@@ -200,7 +212,6 @@ The CLI variant only works on X11 for the reasons described above. Use `gui.py` 
   "polish_threads": 4,
   "polish_timeout": 8.0,
   "polish_style": "",
-  "polish_vocabulary": "Dirk Winiecki\nParakeet",
   "polish_signature": "",
   "polish_default_instructions": "",
   "polish_profiles": [{"match": "linkedin", "instructions": "Beruflich, aber locker."}],
@@ -210,7 +221,16 @@ The CLI variant only works on X11 for the reasons described above. Use `gui.py` 
 
 `polish_model` is one of `gemma4-e2b-q4`, `gemma4-e2b-q8`, `gemma4-e4b-q4`, `gemma4-e4b-q8`; `polish_device` one of `auto`, `cuda`, `vulkan`, `cpu`. `polish_profiles: null` and an empty `polish_default_instructions` use the built-in examples.
 
-For `provider`, valid values are `"groq"`, `"openai"`, or `"parakeet_local"`.
+For `provider`, valid values are `"groq"`, `"openai"`, `"yorik"`, or `"parakeet_local"`. `output_method` is `"paste"` (default) or `"type"`. `capslock_managed` is written by Dictate itself: it remembers that Dictate added `caps:none`, so only then is it removed again. An older `polish_vocabulary` entry is carried over into `vocabulary` on the next start.
+
+## Tests
+
+```bash
+.venv/bin/pip install pytest
+.venv/bin/python -m pytest tests
+```
+
+The tests cover the pure parts (vocabulary, paste shortcut per window, download progress, the Caps Lock option handling, the Copilot key folding) and need neither a display nor a microphone.
 
 ## License
 

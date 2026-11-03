@@ -50,10 +50,8 @@ if (-not (Test-Path $PythonW)) {
     if (-not $?) { throw "creating the virtual environment failed" }
 }
 & $Python -m pip install --quiet --upgrade pip
-# Core deps: GUI, audio capture, hotkey listener + typing, HTTP client, arrays.
-# Local-STT deps: sherpa-onnx runs Parakeet on the CPU offline;
-# huggingface_hub downloads the model on demand from Settings.
-& $Python -m pip install --quiet PyQt6 sounddevice pynput requests numpy sherpa-onnx huggingface_hub
+# The package list lives in requirements.txt, shared with install.sh.
+& $Python -m pip install --quiet -r (Join-Path $ScriptDir "requirements.txt")
 if (-not $?) { throw "pip install failed" }
 
 # --- [3/4] icon --------------------------------------------------------------

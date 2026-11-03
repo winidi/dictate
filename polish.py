@@ -210,14 +210,16 @@ def free_space_mb(path: Path = None) -> int:
 # ---------------------------------------------------------------------------
 # Downloads
 
-def _download(url: str, dest: Path, progress_cb: Optional[Callable[[str], None]], label: str) -> None:
-    """Stream url to dest, resuming a .part file; progress_cb gets short
-    status lines. A dropped connection (common on multi-GB files) is retried
-    a few times from where it stopped before giving up."""
+def _download(url: str, dest: Path, progress_cb: Optional[Callable[[str], None]], label: str,
+              fraction_cb=None) -> None:
+    """Stream url to dest, resuming a .part file; progress_cb gets status
+    lines with speed and time left, fraction_cb feeds a progress bar. A
+    dropped connection (common on multi-GB files) is retried a few times from
+    where it stopped before giving up."""
     last_err = None
     for attempt in range(5):
         try:
-            _download_once(url, dest, progress_cb, label)
+            _download_once(url, dest, progress_cb, label, fraction_cb)
             return
         except (requests.ConnectionError, requests.Timeout,
                 requests.exceptions.ChunkedEncodingError) as e:
@@ -229,7 +231,8 @@ def _download(url: str, dest: Path, progress_cb: Optional[Callable[[str], None]]
     raise RuntimeError(f"download of {label} failed after retries: {last_err}")
 
 
-def _download_once(url: str, dest: Path, progress_cb: Optional[Callable[[str], None]], label: str) -> None:
+def _download_once(url: str, dest: Path, progress_cb: Optional[Callable[[str], None]], label: str,
+                   fraction_cb=None) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(dest.name + ".part")
     have = part.stat().st_size if part.exists() else 0
@@ -243,18 +246,13 @@ def _download_once(url: str, dest: Path, progress_cb: Optional[Callable[[str], N
         if mode == "wb":
             have = 0
         total = int(r.headers.get("Content-Length") or 0) + have
-        last = 0.0
+        meter = core.ProgressMeter(label, progress_cb, fraction_cb)
+        meter.update(have, total)
         with open(part, mode) as f:
             for chunk in r.iter_content(chunk_size=1 << 20):
                 f.write(chunk)
                 have += len(chunk)
-                now = time.monotonic()
-                if progress_cb and now - last > 0.5:
-                    last = now
-                    if total:
-                        progress_cb(f"{label}: {have / 1e6:.0f} / {total / 1e6:.0f} MB")
-                    else:
-                        progress_cb(f"{label}: {have / 1e6:.0f} MB")
+                meter.update(have, total)
     part.replace(dest)
 
 
@@ -270,7 +268,8 @@ def _extract(archive: Path, into: Path) -> None:
                 t.extractall(into)
 
 
-def download_runtime(device: str, progress_cb: Optional[Callable[[str], None]] = None) -> Path:
+def download_runtime(device: str, progress_cb: Optional[Callable[[str], None]] = None,
+                     fraction_cb=None) -> Path:
     """Fetch and unpack the pinned llama.cpp build for this platform/device."""
     key = (_platform(), resolve_device(device))
     if key not in _ASSETS:
@@ -280,9 +279,11 @@ def download_runtime(device: str, progress_cb: Optional[Callable[[str], None]] =
     for asset in _ASSETS[key]:
         archive = into / asset
         if not archive.exists():
-            _download(_RELEASE_URL + asset, archive, progress_cb, f"llama.cpp {asset}")
+            _download(_RELEASE_URL + asset, archive, progress_cb, f"llama.cpp {asset}", fraction_cb)
         if progress_cb:
             progress_cb(tr("Unpacking {asset} ...", asset=asset))
+        if fraction_cb:
+            fraction_cb(None)   # busy: unpacking has no byte count
         _extract(archive, into)
         archive.unlink()
     binary = server_binary(device)
@@ -293,7 +294,8 @@ def download_runtime(device: str, progress_cb: Optional[Callable[[str], None]] =
     return binary
 
 
-def download_model(model_id: str, progress_cb: Optional[Callable[[str], None]] = None) -> Path:
+def download_model(model_id: str, progress_cb: Optional[Callable[[str], None]] = None,
+                   fraction_cb=None) -> Path:
     """Fetch the pinned GGUF through huggingface_hub, like the Parakeet model.
     The hub client speaks HF's chunked Xet protocol, resumes and retries on
     its own; a plain ranged HTTP download of these multi-GB files kept
@@ -302,38 +304,32 @@ def download_model(model_id: str, progress_cb: Optional[Callable[[str], None]] =
     dest = model_path(model_id)
     if dest.exists():
         return dest
+    # No console to draw on under pythonw.exe (issue #20); the folder watcher
+    # reports progress instead. Must be set before the hub is first imported.
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "60")
     try:
         from huggingface_hub import hf_hub_download
     except ImportError as e:
         raise RuntimeError("huggingface_hub is not installed — run: pip install huggingface_hub") from e
     dest.parent.mkdir(parents=True, exist_ok=True)
-    stop = threading.Event()
-
-    def watch():
-        total = m["size_mb"]
-        while not stop.wait(0.5):
-            try:
-                have = sum(p.stat().st_size for p in dest.parent.rglob("*") if p.is_file()) / 1e6
-            except OSError:
-                continue
-            if progress_cb:
-                progress_cb(f"{m['file']}: {min(have, total):.0f} / {total} MB")
-
     if progress_cb:
         progress_cb(tr("{file}: starting ...", file=m["file"]))
-    threading.Thread(target=watch, daemon=True).start()
-    try:
-        hf_hub_download(repo_id=m["repo"], filename=m["file"], revision=m["revision"],
-                        local_dir=str(dest.parent))
-    finally:
-        stop.set()
+    meter = core.ProgressMeter(m["file"], progress_cb, fraction_cb)
+    core.run_watching_folder(
+        lambda: hf_hub_download(repo_id=m["repo"], filename=m["file"], revision=m["revision"],
+                                local_dir=str(dest.parent), etag_timeout=60),
+        dest.parent, m["size_mb"] * 1_000_000, meter,
+    )
     if not dest.exists():
         raise RuntimeError(f"{m['file']} missing after download")
     return dest
 
 
-def download_all(cfg, progress_cb: Optional[Callable[[str], None]] = None) -> None:
-    """Runtime first (small), then the model. Blocks; raises on failure."""
+def download_all(cfg, progress_cb: Optional[Callable[[str], None]] = None, fraction_cb=None) -> None:
+    """Runtime first (small), then the model. Blocks; raises on failure.
+    progress_cb(text) gets status lines, fraction_cb(0..1 or None) feeds a
+    progress bar."""
     need = download_size_mb(cfg)
     free = free_space_mb()
     if need and free < need + 500:
@@ -341,9 +337,9 @@ def download_all(cfg, progress_cb: Optional[Callable[[str], None]] = None) -> No
     device = cfg.get("polish_device", "auto")
     model_id = cfg.get("polish_model", DEFAULT_MODEL)
     if server_binary(device) is None:
-        download_runtime(device, progress_cb)
+        download_runtime(device, progress_cb, fraction_cb)
     if not model_installed(model_id):
-        download_model(model_id, progress_cb)
+        download_model(model_id, progress_cb, fraction_cb)
     if progress_cb:
         progress_cb(tr("Installed."))
 
@@ -707,7 +703,7 @@ def _clean(out: str) -> str:
 
 def build_messages(cfg, text: str, app: str, title: str, mode: str = ""):
     system = [SYSTEM_PROMPT]
-    vocab = [w.strip() for w in re.split(r"[\n,;]+", cfg.get("polish_vocabulary") or "") if w.strip()]
+    vocab = core.vocabulary_terms(cfg)
     if vocab:
         system.append("Names and terms the speaker uses. Speech recognition spells them "
                       "wrong by sound (\"Parakit\" for \"Parakeet\", \"Winiki\" for "
