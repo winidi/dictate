@@ -52,7 +52,12 @@ DE = {
     "Language:": "Sprache:",
     "Provider:": "Anbieter:",
     "show": "zeigen",
-    "Yorik URL:": "Yorik-URL:",
+    "Base URL of a Dictate server (server/ in the repository) on your own PC\n"
+    "or VPS, usually reached over Tailscale/Headscale: http://<name or IP>:8000.\n"
+    "The token comes from `dictate-server add <name>` on that machine.":
+        "Basis-URL eines Dictate-Servers (server/ im Repository) auf dem eigenen PC\n"
+        "oder VPS, meist über Tailscale/Headscale erreichbar: http://<Name oder IP>:8000.\n"
+        "Das Token kommt von `dictate-server add <name>` auf dieser Maschine.",
     "Push-to-talk (hold key)": "Push-to-talk (Taste halten)",
     "Toggle (tap to start, tap to stop)": "Umschalten (tippen für Start, tippen für Stopp)",
     "Mode:": "Modus:",
@@ -103,14 +108,14 @@ DE = {
     "API key works.": "API-Key funktioniert.",
     "API key rejected.": "API-Key abgelehnt.",
     # provider / model labels from core.PROVIDERS
-    "Yorik (home server)": "Yorik (Heimserver)",
+    "Dictate server (own PC or VPS)": "Dictate-Server (eigener PC oder VPS)",
     "Local (Parakeet DE, CPU offline)": "Lokal (Parakeet DE, CPU offline)",
     "whisper-large-v3-turbo (fastest)": "whisper-large-v3-turbo (am schnellsten)",
     "whisper-large-v3 (most accurate)": "whisper-large-v3 (am genauesten)",
     "gpt-4o-mini-transcribe (fast · cheap)": "gpt-4o-mini-transcribe (schnell · günstig)",
     "gpt-4o-transcribe (best quality)": "gpt-4o-transcribe (beste Qualität)",
     "whisper-1 (classic)": "whisper-1 (klassisch)",
-    "Yorik's configured engine (Parakeet, CPU)": "Yoriks konfigurierte Engine (Parakeet, CPU)",
+    "The server's model (Parakeet, CPU)": "Das Modell des Servers (Parakeet, CPU)",
     "parakeet-primeline (German, int8)": "parakeet-primeline (Deutsch, int8)",
 
     # --- Settings: written-text tab ---------------------------------------
@@ -255,13 +260,13 @@ DE = {
     "    \"Download model\" (one-time, about 640 MB)\n"
     "  * Optional: Groq (cloud, free tier — console.groq.com)\n"
     "  * Optional: OpenAI (cloud — platform.openai.com)\n"
-    "  * Optional: Yorik (a server on your own network)":
+    "  * Optional: a Dictate server on your own PC or VPS":
         "Gleich öffnen sich die Einstellungen, um die Spracherkennung einzurichten:\n\n"
         "  * Lokal (offline, Deutsch, CPU) ist vorausgewählt — auf\n"
         "    \"Modell herunterladen\" klicken (einmalig, etwa 640 MB)\n"
         "  * Optional: Groq (Cloud, kostenlos — console.groq.com)\n"
         "  * Optional: OpenAI (Cloud — platform.openai.com)\n"
-        "  * Optional: Yorik (ein Server im eigenen Netz)",
+        "  * Optional: ein Dictate-Server auf dem eigenen PC oder VPS",
     "Optional: {label}": "Optional: {label}",
     "Push-to-talk": "Push-to-talk",
     "Toggle": "Umschalten",

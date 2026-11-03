@@ -15,14 +15,23 @@ from pathlib import Path
 
 import numpy as np
 import requests
-import sounddevice as sd
-from pynput import keyboard
-
-from i18n import tr
 
 IS_WINDOWS = os.name == "nt"
 IS_MACOS = sys.platform == "darwin"
 IS_LINUX = sys.platform.startswith("linux")
+
+# Headless use (the dictate server on a VPS, the tests): pynput's X backend
+# refuses to import without a display, and PortAudio is not installed where
+# nobody records. Neither is needed there.
+if IS_LINUX and not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+    os.environ.setdefault("PYNPUT_BACKEND", "dummy")
+from pynput import keyboard
+try:
+    import sounddevice as sd
+except OSError:            # "PortAudio library not found"
+    sd = None
+
+from i18n import tr
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
@@ -55,16 +64,19 @@ PROVIDERS = {
         ],
         "is_local":      False,
     },
-    "yorik": {
-        "label":         "Yorik (home server)",
+    "dictate_server": {
+        # A Dictate server (server/ in this repo) on your own PC or VPS, reached
+        # over the LAN or a Tailscale/Headscale network. Speaks the OpenAI
+        # transcription API, so a Yorik install works here as well.
+        "label":         "Dictate server (own PC or VPS)",
         "url":           "http://127.0.0.1:8000/v1/audio/transcriptions",
         "models_url":    None,
-        "key_field":     "yorik_token",
-        "key_prefix":    "yk_",
+        "key_field":     "server_token",
+        "key_prefix":    "dk_",
         "default_model": "parakeet",
-        "models": [("Yorik's configured engine (Parakeet, CPU)", "parakeet")],
+        "models": [("The server's model (Parakeet, CPU)", "parakeet")],
         "is_local":      False,
-        "url_field":     "yorik_url",   # base URL, editable in Settings
+        "url_field":     "server_url",   # base URL, editable in Settings
     },
     "parakeet_local": {
         "label":         "Local (Parakeet DE, CPU offline)",
@@ -173,8 +185,8 @@ DEFAULT_CONFIG = {
     # prompt, the polish model as its word list; "Wrong -> Right" lines are
     # replaced in every transcript, also offline (see parse_vocabulary).
     "vocabulary":            "",
-    "yorik_url":             "http://127.0.0.1:8000",  # Yorik base URL (provider "yorik")
-    "yorik_token":           "",   # personal API token from Yorik Settings → API tokens
+    "server_url":            "http://127.0.0.1:8000",  # Dictate server base URL (provider "dictate_server")
+    "server_token":          "",   # token from `dictate-server add <name>` (or a Yorik API token)
     # Optional polishing of the transcript through a local Gemma 4 model
     # (see polish.py). Off by default; nothing is downloaded until the user
     # asks for it in Settings.
@@ -196,7 +208,7 @@ DEFAULT_CONFIG = {
 
 
 def provider_url(cfg, p):
-    """Endpoint URL for an HTTP provider; Yorik's comes from the config."""
+    """Endpoint URL for an HTTP provider; the Dictate server's comes from the config."""
     if p.get("url_field"):
         base = (cfg.get(p["url_field"]) or "").strip().rstrip("/")
         if base:
@@ -231,6 +243,13 @@ def load_config():
                 # there instead of switching to a model that was never downloaded.
                 saved["provider"] = DEFAULT_PROVIDER
                 saved.setdefault("model", DEFAULT_MODEL)
+            # The "Yorik" provider became the generic Dictate server; same API.
+            if saved.get("provider") == "yorik":
+                saved["provider"] = "dictate_server"
+            for old, new in (("yorik_url", "server_url"), ("yorik_token", "server_token")):
+                if old in saved:
+                    saved.setdefault(new, saved[old])
+                    del saved[old]
             # The word list used to belong to the polish only; it now serves
             # every provider, so it moved out of the polish_ namespace.
             if "vocabulary" not in saved and saved.get("polish_vocabulary"):
@@ -659,7 +678,7 @@ def transcribe(audio, cfg):
     data = {"model": model, "response_format": "text"}
     prompt = whisper_prompt(terms)
     if prompt:
-        data["prompt"] = prompt   # Yorik receives it too; an OpenAI-compatible server ignores it
+        data["prompt"] = prompt   # a Dictate server receives it too and ignores it (Parakeet has no prompt)
     headers = {"Authorization": f"Bearer {key}"}
     r = requests.post(provider_url(cfg, p), files=files, data=data, headers=headers, timeout=30)
     r.raise_for_status()
@@ -784,9 +803,10 @@ def run_watching_folder(fn, folder, total_bytes, meter, interval=0.5):
 
 def test_api_key(api_key, provider=DEFAULT_PROVIDER, cfg=None):
     p = PROVIDERS.get(provider, PROVIDERS[DEFAULT_PROVIDER])
-    if provider == "yorik":
-        # A token is valid when Yorik lists the caller's tokens with it.
-        base = ((cfg or {}).get("yorik_url") or DEFAULT_CONFIG["yorik_url"]).strip().rstrip("/")
+    if provider == "dictate_server":
+        # A token is valid when the server answers the token listing with it
+        # (the Dictate server and Yorik both do).
+        base = ((cfg or {}).get("server_url") or DEFAULT_CONFIG["server_url"]).strip().rstrip("/")
         try:
             r = requests.get(base + "/api/tokens", headers={"Authorization": f"Bearer {api_key}"}, timeout=10)
             return r.status_code == 200

@@ -1,0 +1,347 @@
+#!/bin/bash
+# Dictate server + Headscale on a fresh VPS, from A to Z.
+#
+#   curl -fsSL https://raw.githubusercontent.com/winidi/dictate/main/server/install-server.sh -o install-server.sh
+#   sudo bash install-server.sh
+#
+# What you need before you start (five minutes, see server/README.md):
+#   - a VPS with Ubuntu 24.04 / 22.04 or Debian 12, 2 GB RAM or more, root access
+#   - a DNS name that points at the VPS (any domain, or a free one from
+#     duckdns.org). The Tailscale apps insist on HTTPS for the control server,
+#     and the certificate needs a name.
+#
+# What it does:
+#   1. system packages, firewall (22, 80, 443, STUN 3478/udp, WireGuard 41641/udp), automatic updates
+#   2. Headscale (pinned version): the private network that joins phone, PC and
+#      this server, with Let's Encrypt and a built-in relay for phones behind
+#      strict mobile NAT
+#   3. the Tailscale client on this VPS, so the server itself is a member of
+#      that network (name: dictate-server)
+#   4. optional: the Dictate server with the Parakeet model on this VPS, as a
+#      system service bound to the network above only
+#   5. a `dictate-server` command: add people, print their QR codes, status, logs
+#
+# Re-running the script is safe; it only changes what differs. Nothing here
+# ever stores audio.
+set -euo pipefail
+
+HEADSCALE_VERSION="${HEADSCALE_VERSION:-0.29.7}"
+DICTATE_REPO="${DICTATE_REPO:-https://github.com/winidi/dictate}"
+DICTATE_REF="${DICTATE_REF:-main}"
+PYTHON_SERIES=3.12
+SERVICE_USER=dictate
+APP_DIR=/opt/dictate
+STATE_DIR=/var/lib/dictate-server          # HOME of the service user: ~/.config/dictate, ~/.local/share/dictate
+MAGIC_DOMAIN=dictate.internal              # MagicDNS suffix inside the private network
+SERVER_PORT=8000
+export DEBIAN_FRONTEND=noninteractive
+
+say()  { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
+ok()   { printf '    \033[1;32m%s\033[0m\n' "$*"; }
+warn() { printf '    \033[1;33m%s\033[0m\n' "$*"; }
+die()  { printf '\n\033[1;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
+ask()  { local var="$1" prompt="$2" default="${3:-}" answer
+         if [ -n "$default" ]; then read -r -p "$prompt [$default]: " answer; answer="${answer:-$default}"
+         else read -r -p "$prompt: " answer; fi
+         printf -v "$var" '%s' "$answer"; }
+
+[ "$(id -u)" -eq 0 ] || die "run as root: sudo bash install-server.sh"
+[ -t 0 ] || die "run this from an interactive terminal, it asks a few questions"
+. /etc/os-release
+case "${ID}-${VERSION_ID}" in
+    ubuntu-22.04|ubuntu-24.04|ubuntu-26.04|debian-12|debian-13) ok "OS: $PRETTY_NAME" ;;
+    *) warn "Untested OS: $PRETTY_NAME (headscale's packages support Ubuntu 22.04+ and Debian 12+). Continuing." ;;
+esac
+ARCH="$(dpkg --print-architecture)"
+case "$ARCH" in amd64|arm64) ;; *) die "unsupported architecture $ARCH (amd64 or arm64)";; esac
+
+# ------------------------------------------------------------------ questions
+say "A few questions"
+PUBLIC_IP="$(curl -4fsS https://ifconfig.me 2>/dev/null || curl -4fsS https://icanhazip.com 2>/dev/null || true)"
+PUBLIC_IP="${PUBLIC_IP//[[:space:]]/}"
+[ -n "$PUBLIC_IP" ] || die "could not find this server's public IPv4 address (no internet?)"
+echo "    This server's public address: $PUBLIC_IP"
+echo
+echo "    Headscale needs a DNS name that points at $PUBLIC_IP. Examples:"
+echo "      dictate.example.com        (your own domain, an A record)"
+echo "      myname.duckdns.org         (free: duckdns.org -> add a domain -> enter $PUBLIC_IP)"
+SAVED_HOST=""; [ -f /etc/headscale/config.yaml ] && SAVED_HOST="$(sed -n 's#^server_url: https://##p' /etc/headscale/config.yaml | head -1)"
+while :; do
+    ask HOST "DNS name of this server" "$SAVED_HOST"
+    HOST="${HOST#https://}"; HOST="${HOST%/}"
+    [ -n "$HOST" ] || continue
+    RESOLVED="$(getent ahostsv4 "$HOST" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ')"
+    if [[ " $RESOLVED" == *" $PUBLIC_IP "* ]]; then ok "$HOST -> $PUBLIC_IP"; break; fi
+    warn "$HOST resolves to '${RESOLVED:-nothing}', not to $PUBLIC_IP. Fix the DNS record (it can take a few minutes) and try again."
+    read -r -p "    Try again (t) or continue anyway (c)? [t]: " a; [ "${a:-t}" = "c" ] && break
+done
+ask ADMIN "Your name (the first user, letters and digits only)" "$(logname 2>/dev/null || echo me)"
+ADMIN="$(echo "$ADMIN" | tr -cd 'a-zA-Z0-9-' | tr 'A-Z' 'a-z')"; [ -n "$ADMIN" ] || die "the name must have letters or digits"
+ask EMAIL "Email for Let's Encrypt expiry warnings (optional)" ""
+RAM_MB=$(( $(awk '/MemTotal/ {print $2}' /proc/meminfo) / 1024 ))
+CORES="$(nproc)"
+DEFAULT_LOCAL=y; [ "$RAM_MB" -lt 1800 ] && DEFAULT_LOCAL=n
+echo
+echo "    This VPS has $CORES core(s) and $RAM_MB MB RAM."
+echo "    Transcription can run here (Parakeet, ~1 GB RAM, about 1-2 s per sentence on a small VPS)"
+echo "    or only on your PC at home, with this VPS as the bridge between phone and PC."
+ask RUN_LOCAL "Run the transcription on this VPS too? (y/n)" "$DEFAULT_LOCAL"
+[ "$RUN_LOCAL" = y ] && [ "$RAM_MB" -lt 1800 ] && warn "Under 2 GB RAM the model may not fit; continuing because you asked."
+
+# ------------------------------------------------------------------ 1 system
+say "[1/5] System packages, firewall, automatic updates"
+apt-get update -qq
+apt-get install -y -qq curl ca-certificates ufw qrencode jq unattended-upgrades apt-listchanges >/dev/null
+ufw --force reset >/dev/null
+ufw default deny incoming >/dev/null
+ufw default allow outgoing >/dev/null
+ufw allow 22/tcp    comment 'ssh' >/dev/null
+ufw allow 80/tcp    comment 'headscale: Lets Encrypt' >/dev/null
+ufw allow 443/tcp   comment 'headscale: control + DERP relay' >/dev/null
+ufw allow 3478/udp  comment 'headscale: STUN for the relay' >/dev/null
+ufw allow 41641/udp comment 'tailscale: WireGuard' >/dev/null
+ufw allow in on tailscale0 comment 'everything from the private network' >/dev/null
+ufw --force enable >/dev/null
+dpkg-reconfigure -f noninteractive unattended-upgrades >/dev/null 2>&1 || true
+ok "firewall: 22, 80, 443, 3478/udp, 41641/udp open; the dictate server is reachable from the private network only"
+
+# ------------------------------------------------------------------ 2 headscale
+say "[2/5] Headscale $HEADSCALE_VERSION"
+if ! headscale version 2>/dev/null | grep -q "$HEADSCALE_VERSION"; then
+    DEB="/tmp/headscale_${HEADSCALE_VERSION}_linux_${ARCH}.deb"
+    curl -fsSL -o "$DEB" "https://github.com/juanfont/headscale/releases/download/v${HEADSCALE_VERSION}/headscale_${HEADSCALE_VERSION}_linux_${ARCH}.deb"
+    apt-get install -y -qq "$DEB" >/dev/null
+    rm -f "$DEB"
+fi
+ok "headscale $(headscale version 2>/dev/null | head -1)"
+mkdir -p /etc/headscale /var/lib/headscale
+cat > /etc/headscale/config.yaml <<EOF
+# Written by dictate's install-server.sh. Reference: config-example.yaml of headscale ${HEADSCALE_VERSION}.
+server_url: https://${HOST}
+listen_addr: 0.0.0.0:443
+metrics_listen_addr: 127.0.0.1:9090
+noise:
+  private_key_path: /var/lib/headscale/noise_private.key
+prefixes:
+  v4: 100.64.0.0/10
+  v6: fd7a:115c:a1e0::/48
+  allocation: sequential
+derp:
+  # The built-in relay carries traffic when phone and PC cannot reach each
+  # other directly (mobile carriers' NAT). Still end-to-end encrypted: the
+  # relay sees only WireGuard ciphertext.
+  server:
+    enabled: true
+    region_id: 999
+    region_code: "dictate"
+    region_name: "Dictate relay (${HOST})"
+    verify_clients: true
+    stun_listen_addr: "0.0.0.0:3478"
+    private_key_path: /var/lib/headscale/derp_server_private.key
+    automatically_add_embedded_derp_region: true
+    ipv4: ${PUBLIC_IP}
+  urls:
+    - https://controlplane.tailscale.com/derpmap/default
+  paths: []
+  auto_update_enabled: true
+  update_frequency: 3h
+disable_check_updates: true
+node:
+  expiry: 0
+  ephemeral:
+    inactivity_timeout: 30m
+database:
+  type: sqlite
+  sqlite:
+    path: /var/lib/headscale/db.sqlite
+    write_ahead_log: true
+tls:
+  acme:
+    hostname: ${HOST}
+    challenge_type: HTTP-01
+    http_listen: ":http"
+    url: https://acme-v02.api.letsencrypt.org/directory
+    email: "${EMAIL}"
+    cache_dir: /var/lib/headscale/cache
+log:
+  level: info
+  format: text
+policy:
+  mode: file
+  path: ""
+dns:
+  magic_dns: true
+  base_domain: ${MAGIC_DOMAIN}
+  override_local_dns: false
+  nameservers:
+    global:
+      - 1.1.1.1
+      - 9.9.9.9
+  search_domains: []
+unix_socket: /var/run/headscale/headscale.sock
+unix_socket_permission: "0770"
+logtail:
+  enabled: false
+EOF
+chown -R headscale:headscale /etc/headscale /var/lib/headscale 2>/dev/null || true
+systemctl enable headscale >/dev/null 2>&1
+systemctl restart headscale
+printf '    waiting for headscale and its certificate '
+for i in $(seq 1 60); do
+    if curl -fsS "https://${HOST}/health" >/dev/null 2>&1; then echo; break; fi
+    printf '.'; sleep 3
+    [ "$i" -eq 60 ] && { echo; journalctl -u headscale -n 30 --no-pager; die "https://${HOST}/health does not answer. Is port 80/443 reachable from the internet and the DNS name right?"; }
+done
+ok "https://${HOST} is up"
+headscale users list -o json 2>/dev/null | jq -e --arg u "$ADMIN" 'map(select(.name==$u)) | length > 0' >/dev/null 2>&1 \
+    || headscale users create "$ADMIN" >/dev/null
+ok "headscale user: $ADMIN"
+
+# ------------------------------------------------------------------ 3 tailscale on the VPS
+say "[3/5] Tailscale client on this VPS"
+if ! command -v tailscale >/dev/null 2>&1; then
+    curl -fsSL https://tailscale.com/install.sh | sh >/dev/null 2>&1
+fi
+systemctl enable --now tailscaled >/dev/null 2>&1
+if ! tailscale status --json 2>/dev/null | jq -e '.BackendState == "Running"' >/dev/null; then
+    KEY="$(headscale preauthkeys create --user "$ADMIN" --expiration 10m -o json | jq -r '.key // .')"
+    tailscale up --login-server "https://${HOST}" --authkey "$KEY" --hostname dictate-server --accept-dns=false
+fi
+TS_IP="$(tailscale ip -4)"
+ok "this VPS in the private network: dictate-server ($TS_IP)"
+
+# ------------------------------------------------------------------ 4 dictate server
+if [ "$RUN_LOCAL" = y ]; then
+    say "[4/5] Dictate server (Parakeet) on this VPS"
+    apt-get install -y -qq build-essential git libportaudio2 >/dev/null
+    id -u "$SERVICE_USER" >/dev/null 2>&1 || useradd --system --create-home --home-dir "$STATE_DIR" --shell /usr/sbin/nologin "$SERVICE_USER"
+    mkdir -p "$STATE_DIR"; chown "$SERVICE_USER:$SERVICE_USER" "$STATE_DIR"
+    if [ -d "$APP_DIR/.git" ]; then
+        git -C "$APP_DIR" fetch -q origin "$DICTATE_REF" && git -C "$APP_DIR" checkout -q FETCH_HEAD
+    else
+        rm -rf "$APP_DIR"; git clone -q --depth 1 --branch "$DICTATE_REF" "$DICTATE_REPO" "$APP_DIR"
+    fi
+    chown -R "$SERVICE_USER:$SERVICE_USER" "$APP_DIR"
+    if ! command -v uv >/dev/null 2>&1; then
+        curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh >/dev/null
+    fi
+    sudo -u "$SERVICE_USER" -H bash -c "
+        set -e; cd '$APP_DIR'
+        export UV_PYTHON_PREFERENCE=managed UV_CACHE_DIR='$STATE_DIR/.cache/uv'
+        [ -x .venv/bin/python ] || uv venv -q --python $PYTHON_SERIES .venv
+        uv pip install -q --python .venv/bin/python -r server/requirements-server.txt
+        HF_HUB_DISABLE_PROGRESS_BARS=1 .venv/bin/python -m server download-model
+    "
+    cat > /etc/systemd/system/dictate-server.service <<EOF
+[Unit]
+Description=Dictate server (speech to text for the private network)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+User=${SERVICE_USER}
+Group=${SERVICE_USER}
+WorkingDirectory=${APP_DIR}
+Environment=HOME=${STATE_DIR}
+Environment=PYNPUT_BACKEND=dummy
+Environment=HF_HUB_DISABLE_PROGRESS_BARS=1
+# 0.0.0.0 is safe: the firewall lets port ${SERVER_PORT} in from the private network only.
+ExecStart=${APP_DIR}/.venv/bin/python -m server serve --host 0.0.0.0 --port ${SERVER_PORT}
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=${STATE_DIR}
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable dictate-server >/dev/null 2>&1
+    systemctl restart dictate-server
+    ok "dictate-server service: http://dictate-server:${SERVER_PORT} (http://${TS_IP}:${SERVER_PORT}) inside the private network"
+else
+    say "[4/5] Dictate server on this VPS: skipped (your PC does the transcription)"
+fi
+
+# ------------------------------------------------------------------ 5 management command
+say "[5/5] The dictate-server command"
+cat > /usr/local/bin/dictate-server <<'EOF'
+#!/bin/bash
+# Manage the Dictate server and its private network.
+#   dictate-server add <name>      a person or device: network key + dictation token + QR codes
+#   dictate-server list            people, devices, tokens
+#   dictate-server remove <name>   their tokens and headscale user
+#   dictate-server status | logs | update
+set -euo pipefail
+APP_DIR=/opt/dictate; STATE_DIR=/var/lib/dictate-server; SERVICE_USER=dictate; PORT=8000
+HOST="$(sed -n 's#^server_url: https://##p' /etc/headscale/config.yaml | head -1)"
+have_local() { [ -f /etc/systemd/system/dictate-server.service ]; }
+token_cmd() { sudo -u "$SERVICE_USER" -H env PYNPUT_BACKEND=dummy "$APP_DIR/.venv/bin/python" -m server token "$@"; }
+case "${1:-}" in
+  add)
+    NAME="$(echo "${2:-}" | tr -cd 'a-zA-Z0-9-' | tr 'A-Z' 'a-z')"; [ -n "$NAME" ] || { echo "usage: dictate-server add <name>"; exit 1; }
+    headscale users list -o json | jq -e --arg u "$NAME" 'map(select(.name==$u)) | length > 0' >/dev/null || headscale users create "$NAME" >/dev/null
+    KEY="$(headscale preauthkeys create --user "$NAME" --reusable --expiration 168h -o json | jq -r '.key // .')"
+    TOKEN=""; have_local && TOKEN="$(token_cmd add "$NAME")"
+    TS_IP="$(tailscale ip -4 2>/dev/null || true)"
+    echo
+    echo "================= $NAME: join the private network ================="
+    echo "On the phone: install 'Tailscale' (Play Store / F-Droid), open it, then"
+    echo "  Settings (gear) -> Accounts -> three dots -> 'Use an alternate server'"
+    echo "     server:   https://$HOST"
+    echo "  (close the login page) -> Accounts -> three dots -> 'Use an auth key'"
+    echo "     key:      $KEY"
+    echo "On a PC:  tailscale up --login-server https://$HOST --authkey $KEY"
+    echo "The key works for 7 days and for several devices."
+    if [ -n "$TOKEN" ]; then
+      echo
+      echo "================= $NAME: the Dictate app / desktop ================="
+      echo "  server URL:  http://dictate-server:$PORT   (or http://$TS_IP:$PORT)"
+      echo "  token:       $TOKEN"
+      echo "  Scan this with the Dictate app:"
+      qrencode -t ANSIUTF8 -m 1 "dictate://setup?server=http://${TS_IP}:${PORT}&token=${TOKEN}&name=${NAME}"
+    else
+      echo
+      echo "This VPS does not transcribe itself; on your PC run 'python -m server serve' and"
+      echo "'python -m server token add $NAME', then point the app at the PC's address."
+    fi
+    ;;
+  list)
+    echo "--- network users ---"; headscale users list
+    echo "--- devices ---"; headscale nodes list
+    have_local && { echo "--- dictation tokens ---"; token_cmd list; }
+    ;;
+  remove)
+    [ -n "${2:-}" ] || { echo "usage: dictate-server remove <name>"; exit 1; }
+    have_local && token_cmd remove "$2" || true
+    for id in $(headscale nodes list -o json | jq -r --arg u "$2" '.[] | select(.user.name==$u) | .id'); do headscale nodes delete -i "$id" --force; done
+    headscale users destroy --name "$2" --force 2>/dev/null || headscale users destroy "$2" --force 2>/dev/null || true
+    echo "removed $2"
+    ;;
+  status)
+    systemctl --no-pager status headscale tailscaled $(have_local && echo dictate-server) | grep -E "●|Active:" || true
+    echo; tailscale status || true
+    have_local && { echo; curl -fsS "http://127.0.0.1:$PORT/health" | jq . || echo "dictate-server does not answer"; }
+    ;;
+  logs)  journalctl -u dictate-server -u headscale -n "${2:-50}" --no-pager ;;
+  update)
+    have_local || { echo "no dictate server on this VPS"; exit 0; }
+    git -C "$APP_DIR" fetch -q origin main && git -C "$APP_DIR" checkout -q FETCH_HEAD && chown -R "$SERVICE_USER:$SERVICE_USER" "$APP_DIR"
+    sudo -u "$SERVICE_USER" -H bash -c "cd $APP_DIR && UV_CACHE_DIR=$STATE_DIR/.cache/uv uv pip install -q --python .venv/bin/python -r server/requirements-server.txt"
+    systemctl restart dictate-server && echo "updated and restarted"
+    ;;
+  *) sed -n '2,7p' "$0" ;;
+esac
+EOF
+chmod +x /usr/local/bin/dictate-server
+ok "/usr/local/bin/dictate-server"
+
+# ------------------------------------------------------------------ done
+say "Done. Your first key and token:"
+dictate-server add "$ADMIN"
+echo
+echo "Next: on your PC with Dictate, pick the provider 'Dictate server', enter the URL and token"
+echo "above (after joining the network with tailscale up ... as printed). The phone app follows."
+echo "More people: dictate-server add <name>     Status: dictate-server status     Logs: dictate-server logs"

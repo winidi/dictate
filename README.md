@@ -1,6 +1,6 @@
 # Dictate
 
-Voice dictation to keyboard on Linux and Windows — cloud (Groq / OpenAI), a Yorik server on the LAN, or fully offline (Parakeet, German, CPU).
+Voice dictation to keyboard on Linux and Windows — fully offline (Parakeet, German, CPU), through your own Dictate server on a PC or VPS, or cloud (Groq / OpenAI).
 
 Hold a hotkey, speak, release — the transcribed text is typed wherever your cursor is. Works in any application (X11, native Wayland and Windows alike), including editors, terminals, browsers, chat windows.
 
@@ -12,7 +12,7 @@ Hold a hotkey, speak, release — the transcribed text is typed wherever your cu
 - Text arrives as a **paste** (one key press, the clipboard is restored afterwards) or as **typed keys**, switchable in the main window
 - **Vocabulary**: names and terms the recognizer spells by sound, sent to the cloud models as a prompt; `Wrong -> Right` lines are replaced in every transcript, also offline
 - Four transcription backends:
-  - **Yorik** (home server) — sends the clip to a Yorik install on the LAN (`/v1/audio/transcriptions`, personal API token from Yorik's Settings → API tokens). One Parakeet for every device in the house; this machine carries no model.
+  - **Dictate server** (own PC or VPS) — sends the clip to a [Dictate server](server/README.md) over the LAN or a Tailscale/Headscale network (`/v1/audio/transcriptions`, token from `dictate-server add`). One Parakeet for every device, and the phone app dictates through the same server; this machine carries no model. A Yorik install speaks the same API and works here too.
   - **Groq** cloud — `whisper-large-v3-turbo`, `whisper-large-v3`
   - **OpenAI** cloud — `gpt-4o-mini-transcribe`, `gpt-4o-transcribe`, `whisper-1`
   - **Local** offline — `parakeet-primeline` (German fine-tune of `nvidia/parakeet-tdt-0.6b-v3`, int8 ONNX via [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)). CPU-only, ~50 ms decode for 2 s audio at 4 threads. No network, no API key.
@@ -66,7 +66,7 @@ Windows must allow desktop apps to use the microphone: *Settings → Privacy & s
 
 ## First run
 
-Launch **Dictate** from the app menu (or `.venv/bin/python gui.py`). On first launch Settings open with the offline **Local** provider preselected: click *Download model* (one-time, about 640 MB) and you can dictate without a key or a network. Groq, OpenAI and Yorik are listed as *Optional* and take an API key instead. An existing configuration keeps its provider.
+Launch **Dictate** from the app menu (or `.venv/bin/python gui.py`). On first launch Settings open with the offline **Local** provider preselected: click *Download model* (one-time, about 640 MB) and you can dictate without a key or a network. Groq, OpenAI and the Dictate server are listed as *Optional* and take an API key or token instead. An existing configuration keeps its provider.
 
 ## Usage
 
@@ -75,7 +75,7 @@ Default hotkey is **F9**. Hold it, speak, release. The transcription is typed at
 In **Settings** you can change:
 
 - **Language** — the interface in English or German (*Deutsch*); the default follows the system language. Switching applies at once
-- **Provider** — Local (Parakeet DE, the default), or optionally Groq, OpenAI, Yorik
+- **Provider** — Local (Parakeet DE, the default), or optionally Groq, OpenAI, a Dictate server
 - **Mode** — push-to-talk (hold) or toggle (tap to start / tap to stop)
 - **Hotkey** — F1–F12, modifier keys (Ctrl / Alt / Shift / Super), Caps Lock, the Microsoft **Copilot** key, or one of the Logitech-style mouse side buttons (`MOUSE BACK`, `MOUSE FORWARD`, `MOUSE SIDE`, `MOUSE EXTRA`, `MOUSE TASK`). On Linux the Copilot key and the mouse buttons need the evdev backend (i.e. `input`-group setup complete). On Windows the two thumb buttons arrive as `MOUSE BACK` / `MOUSE FORWARD` (`MOUSE SIDE` / `MOUSE EXTRA` are the same two buttons under their Linux names); `MOUSE TASK` and `COPILOT` are Linux-only. Avoid the Super / Windows key on Windows: releasing it opens the Start menu.
   - **Caps Lock**: Dictate only listens to the key, so the desktop would still toggle Caps Lock on every press and the text would come out in capitals. With *Disable the Caps Lock function* (shown below the hotkey, ticked by default) Dictate adds the GNOME keyboard option `caps:none` while it runs and removes it again on quit; other keyboard options are untouched, and a `caps:none` you set yourself stays. Needs GNOME (`gsettings`) and the evdev backend; under the pynput fallback Caps Lock keeps working and Dictate says so. Other desktops: `setxkbmap -option caps:none` by hand
@@ -221,7 +221,11 @@ The CLI variant only works on X11 for the reasons described above. Use `gui.py` 
 
 `polish_model` is one of `gemma4-e2b-q4`, `gemma4-e2b-q8`, `gemma4-e4b-q4`, `gemma4-e4b-q8`; `polish_device` one of `auto`, `cuda`, `vulkan`, `cpu`. `polish_profiles: null` and an empty `polish_default_instructions` use the built-in examples.
 
-For `provider`, valid values are `"parakeet_local"` (the default on a fresh install), `"groq"`, `"openai"`, or `"yorik"`. A config without a `provider` entry comes from before providers existed and stays on Groq. `output_method` is `"paste"` (default) or `"type"`. `capslock_managed` is written by Dictate itself: it remembers that Dictate added `caps:none`, so only then is it removed again. An older `polish_vocabulary` entry is carried over into `vocabulary` on the next start.
+For `provider`, valid values are `"parakeet_local"` (the default on a fresh install), `"groq"`, `"openai"`, or `"dictate_server"` (with `server_url` and `server_token`; the former `yorik` values are carried over). A config without a `provider` entry comes from before providers existed and stays on Groq.
+
+## Phone and other devices: the Dictate server
+
+`server/` turns the recognizer into a small HTTP service for your own devices: run it on your PC (`python -m server serve`, with your Gemma polishing on the GPU) or let `server/install-server.sh` set up a VPS with Headscale, so a phone reaches it through a private WireGuard network. The desktop provider "Dictate server" uses it today; the Android app is the next step. Everything about it is in [server/README.md](server/README.md). `output_method` is `"paste"` (default) or `"type"`. `capslock_managed` is written by Dictate itself: it remembers that Dictate added `caps:none`, so only then is it removed again. An older `polish_vocabulary` entry is carried over into `vocabulary` on the next start.
 
 ## Tests
 

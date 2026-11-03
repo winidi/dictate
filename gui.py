@@ -195,10 +195,15 @@ class SettingsDialog(QDialog):
         self.api_key_label = QLabel()
         self.form.addRow(self.api_key_label, self.api_key_wrap)
 
-        # --- Yorik URL row (shown only for the Yorik provider) ---
-        self.yorik_url_edit = QLineEdit(self.cfg.get("yorik_url", core.DEFAULT_CONFIG["yorik_url"]))
-        self.yorik_url_edit.setPlaceholderText("http://yorik.local:8000")
-        self.form.addRow(tr("Yorik URL:"), self.yorik_url_edit)
+        # --- Server URL row (shown only for the Dictate server provider) ---
+        self.server_url_edit = QLineEdit(self.cfg.get("server_url", core.DEFAULT_CONFIG["server_url"]))
+        self.server_url_edit.setPlaceholderText("http://dictate-server:8000")
+        self.server_url_edit.setToolTip(tr(
+            "Base URL of a Dictate server (server/ in the repository) on your own PC\n"
+            "or VPS, usually reached over Tailscale/Headscale: http://<name or IP>:8000.\n"
+            "The token comes from `dictate-server add <name>` on that machine."
+        ))
+        self.form.addRow(tr("Server URL:"), self.server_url_edit)
 
         # Per-provider key cache — only providers that actually take a key.
         self._keys = {
@@ -676,7 +681,7 @@ class SettingsDialog(QDialog):
         # Toggle row visibility. QFormLayout.setRowVisible(widget, bool) hides
         # both the field and its label.
         self.form.setRowVisible(self.api_key_wrap, not is_local)
-        self.form.setRowVisible(self.yorik_url_edit, pid == "yorik")
+        self.form.setRowVisible(self.server_url_edit, pid == "dictate_server")
         self.form.setRowVisible(self.model_box, not is_local)
         self.form.setRowVisible(self.test_btn, not is_local)
         self.form.setRowVisible(self.local_status_label, is_local)
@@ -771,7 +776,7 @@ class SettingsDialog(QDialog):
         self.test_btn.setText(tr("Testing..."))
         QApplication.processEvents()
         ok = core.test_api_key(key, self.provider_box.currentData(),
-                               cfg={"yorik_url": self.yorik_url_edit.text().strip()})
+                               cfg={"server_url": self.server_url_edit.text().strip()})
         self.test_btn.setEnabled(True)
         self.test_btn.setText(tr("Test API key"))
         if ok:
@@ -796,8 +801,8 @@ class SettingsDialog(QDialog):
             "threshold":             float(self.threshold_box.value()),
             "vocabulary":            self.vocab_edit.toPlainText().strip(),
             "local_stt_num_threads": int(self.local_threads_box.value()),
-            "yorik_url":             self.yorik_url_edit.text().strip() or core.DEFAULT_CONFIG["yorik_url"],
-            "yorik_token":           self._keys.get("yorik", ""),
+            "server_url":            self.server_url_edit.text().strip() or core.DEFAULT_CONFIG["server_url"],
+            "server_token":          self._keys.get("dictate_server", ""),
             **self._polish_cfg(),
         }
 
@@ -1168,7 +1173,7 @@ class MainWindow(QMainWindow):
                "    \"Download model\" (one-time, about 640 MB)\n"
                "  * Optional: Groq (cloud, free tier — console.groq.com)\n"
                "  * Optional: OpenAI (cloud — platform.openai.com)\n"
-               "  * Optional: Yorik (a server on your own network)"),
+               "  * Optional: a Dictate server on your own PC or VPS"),
         )
         self.open_settings()
 

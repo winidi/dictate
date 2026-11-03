@@ -1,0 +1,13 @@
+# Python packages for the Dictate server (python -m server). No GUI, no
+# audio capture: PyQt6, sounddevice and pynput's real backends stay out.
+fastapi
+uvicorn
+python-multipart
+numpy
+requests
+sherpa-onnx
+soundfile
+huggingface_hub
+# core.py imports pynput for the hotkey tables; with no display it switches
+# itself to pynput's dummy backend, so the package is enough.
+pynput
