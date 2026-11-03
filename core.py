@@ -78,7 +78,10 @@ PROVIDERS = {
     },
 }
 
-# Backward-compat aliases used elsewhere in the codebase.
+# A fresh install starts on the offline model: no key, no network, nothing
+# leaves the machine. DEFAULT_PROVIDER stays Groq for the fallbacks and for
+# configs from before providers existed, which were Groq-only (load_config).
+FRESH_PROVIDER   = "parakeet_local"
 DEFAULT_PROVIDER = "groq"
 DEFAULT_MODEL    = PROVIDERS[DEFAULT_PROVIDER]["default_model"]
 GROQ_URL         = PROVIDERS["groq"]["url"]
@@ -154,12 +157,12 @@ KEY_MAP.update({
 EVDEV_ONLY_KEYS = {"mouse_task", "copilot"}
 
 DEFAULT_CONFIG = {
-    "provider":              DEFAULT_PROVIDER,
+    "provider":              FRESH_PROVIDER,
     "api_key":               "",   # Groq key (kept name for backward compat)
     "openai_api_key":        "",   # OpenAI key
     "mode":                  "ptt",
     "key":                   "f9",
-    "model":                 DEFAULT_MODEL,
+    "model":                 PROVIDERS[FRESH_PROVIDER]["default_model"],
     "threshold":             2.0,   # seconds; a shorter hold is discarded
     "output_method":         "paste",  # how the text reaches the window: paste | type (key presses)
     "disable_capslock":      True,  # hotkey Caps Lock: switch the Caps Lock function off in the desktop
@@ -223,6 +226,11 @@ def load_config():
     if CONFIG_PATH.exists():
         try:
             saved = json.loads(CONFIG_PATH.read_text())
+            if "provider" not in saved:
+                # A config from before providers existed was Groq-only. Keep it
+                # there instead of switching to a model that was never downloaded.
+                saved["provider"] = DEFAULT_PROVIDER
+                saved.setdefault("model", DEFAULT_MODEL)
             # The word list used to belong to the polish only; it now serves
             # every provider, so it moved out of the polish_ namespace.
             if "vocabulary" not in saved and saved.get("polish_vocabulary"):

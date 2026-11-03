@@ -37,6 +37,22 @@ def test_vocabulary_terms_from_config():
     assert core.vocabulary_terms(cfg) == ["Dirk Winiecki", "Parakeet"]
 
 
+def test_fresh_config_starts_on_the_local_model(tmp_path, monkeypatch):
+    monkeypatch.setattr(core, "CONFIG_PATH", tmp_path / "config.json")
+    cfg = core.load_config()
+    assert cfg["provider"] == "parakeet_local"
+    assert cfg["model"] == core.PROVIDERS["parakeet_local"]["default_model"]
+
+
+def test_config_without_provider_stays_on_groq(tmp_path, monkeypatch):
+    monkeypatch.setattr(core, "CONFIG_PATH", tmp_path / "config.json")
+    (tmp_path / "config.json").write_text(json.dumps({"api_key": "gsk_x", "key": "f9"}))
+    cfg = core.load_config()
+    assert (cfg["provider"], cfg["model"]) == ("groq", "whisper-large-v3-turbo")
+    (tmp_path / "config.json").write_text(json.dumps({"provider": "openai"}))
+    assert core.load_config()["provider"] == "openai"
+
+
 def test_load_config_migrates_polish_vocabulary(tmp_path, monkeypatch):
     monkeypatch.setattr(core, "CONFIG_PATH", tmp_path / "config.json")
     (tmp_path / "config.json").write_text(json.dumps({"polish_vocabulary": "Alt", "key": "f8"}))

@@ -250,14 +250,19 @@ DE = {
     "Polishing is on but not installed — open Settings": "Schrifttext ist an, aber nicht installiert — Einstellungen öffnen",
     "Polishing: {err}": "Aufbereitung: {err}",
     "Welcome to Dictate": "Willkommen bei Dictate",
-    "Open Settings to pick a transcription provider:\n\n"
-    "  * Groq (cloud, free tier — console.groq.com)\n"
-    "  * OpenAI (cloud — platform.openai.com)\n"
-    "  * Local (offline, German, CPU — one-time 640 MB download)":
-        "Wähle in den Einstellungen einen Anbieter für die Erkennung:\n\n"
-        "  * Groq (Cloud, kostenlos — console.groq.com)\n"
-        "  * OpenAI (Cloud — platform.openai.com)\n"
-        "  * Lokal (offline, Deutsch, CPU — einmaliger Download, 640 MB)",
+    "Settings open next, to set up the speech recognition:\n\n"
+    "  * Local (offline, German, CPU) is preselected — click\n"
+    "    \"Download model\" (one-time, about 640 MB)\n"
+    "  * Optional: Groq (cloud, free tier — console.groq.com)\n"
+    "  * Optional: OpenAI (cloud — platform.openai.com)\n"
+    "  * Optional: Yorik (a server on your own network)":
+        "Gleich öffnen sich die Einstellungen, um die Spracherkennung einzurichten:\n\n"
+        "  * Lokal (offline, Deutsch, CPU) ist vorausgewählt — auf\n"
+        "    \"Modell herunterladen\" klicken (einmalig, etwa 640 MB)\n"
+        "  * Optional: Groq (Cloud, kostenlos — console.groq.com)\n"
+        "  * Optional: OpenAI (Cloud — platform.openai.com)\n"
+        "  * Optional: Yorik (ein Server im eigenen Netz)",
+    "Optional: {label}": "Optional: {label}",
     "Push-to-talk": "Push-to-talk",
     "Toggle": "Umschalten",
     "     Min hold: {thr}s": "     Mindestens halten: {thr}s",

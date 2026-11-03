@@ -10,8 +10,7 @@ numpy
 sherpa-onnx
 soundfile
 huggingface_hub
-# Linux/Wayland hotkeys read /dev/input directly. The distro package
-# (python3-evdev / python-evdev) is preferred, since the wheel has to be
-# compiled; install.sh makes it visible inside the venv. This line only kicks
-# in when no distro package is found.
+# Linux/Wayland hotkeys read /dev/input directly. There is no wheel; the
+# package is built from source against the kernel headers, which is why
+# install.sh brings a C compiler (build-essential / base-devel).
 evdev; sys_platform == "linux"

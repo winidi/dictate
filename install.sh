@@ -3,14 +3,18 @@
 #
 #   ./install.sh [--distro=debian|arch]
 #
-# Everything lands next to the scripts: the Python packages go into ./.venv,
-# so nothing is installed into the system Python (PEP 668 distros such as
-# Arch refuse that anyway). System packages come from apt or pacman; the
-# distro is detected from the package manager that is present.
+# Everything lands next to the scripts: uv puts its own Python 3.12 and the
+# packages from requirements.txt into ./.venv, so Dictate neither depends on
+# the distro's Python version nor installs anything into it (PEP 668 distros
+# such as Arch refuse that anyway). Only the typing tools, PortAudio and a C
+# compiler (evdev is built from source) come from apt or pacman; the distro
+# is detected from the package manager that is present.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV="$SCRIPT_DIR/.venv"
+PYTHON_SERIES=3.12     # wheels for PyQt6, sherpa-onnx and sounddevice all exist for it
+export UV_PYTHON_PREFERENCE=managed   # uv's own build, the same on every machine
 
 echo "Dictate installer"
 echo "================="
@@ -36,19 +40,21 @@ echo "[1/4] Installing system packages ($DISTRO, needs sudo)..."
 # wtype:          Wayland typing that follows the keyboard layout (KDE, wlroots; not GNOME)
 # ydotool:        /dev/uinput typing fallback for GNOME Wayland (US layout only)
 # xclip:          clipboard for "Insert text by: Paste" on X11
-# python evdev:   /dev/input/event* reader, works on Wayland where pynput is blind
 # portaudio:      runtime library for the sounddevice wheel (missing on a fresh Ubuntu desktop)
 # libxcb-cursor:  needed by the PyQt6 wheel on X11
+# compiler:       the evdev package (/dev/input reader for Wayland hotkeys) has no
+#                 wheel and is built against the kernel headers in a few seconds
+# curl:           fetches uv when it is not installed yet
 case "$DISTRO" in
     debian)
         sudo apt-get update -qq
         sudo apt-get install -y \
-            xdotool wtype ydotool xclip libnotify-bin python3-venv python3-pip \
-            libxcb-cursor0 python3-evdev libportaudio2
+            xdotool wtype ydotool xclip libnotify-bin libxcb-cursor0 libportaudio2 \
+            build-essential curl
         ;;
     arch)
         sudo pacman -S --needed \
-            xdotool wtype ydotool xclip libnotify python xcb-util-cursor python-evdev portaudio
+            xdotool wtype ydotool xclip libnotify xcb-util-cursor portaudio base-devel curl
         ;;
     *) echo "Unknown distro '$DISTRO' (debian or arch)"; exit 1 ;;
 esac
@@ -61,14 +67,25 @@ if systemctl --user cat ydotool.service >/dev/null 2>&1; then
 fi
 
 echo
-echo "[2/4] Installing Python packages into $VENV ..."
-# --system-site-packages makes the distro's python3-evdev visible inside the
-# venv, so pip does not have to compile the evdev wheel.
-if [ ! -x "$VENV/bin/python" ]; then
-    python3 -m venv --system-site-packages "$VENV"
+echo "[2/4] Installing Python $PYTHON_SERIES and the packages into $VENV (uv) ..."
+# uv (https://docs.astral.sh/uv/) downloads a self-contained Python and
+# resolves the packages far faster than pip. The installer puts it into
+# ~/.local/bin and touches no shell profile.
+export PATH="$HOME/.local/bin:$PATH"
+if ! command -v uv >/dev/null 2>&1; then
+    echo "  Fetching uv ..."
+    curl -LsSf https://astral.sh/uv/install.sh | INSTALLER_NO_MODIFY_PATH=1 sh
 fi
-"$VENV/bin/python" -m pip install --quiet --upgrade pip
-"$VENV/bin/python" -m pip install --quiet -r "$SCRIPT_DIR/requirements.txt"
+# A venv from an earlier install.sh ran on the system Python; rebuild it so
+# every machine runs the same interpreter.
+if [ -x "$VENV/bin/python" ] && ! "$VENV/bin/python" -c "import sys; sys.exit(sys.version_info[:2] != tuple(map(int, '$PYTHON_SERIES'.split('.'))))"; then
+    echo "  Replacing $VENV with one on Python $PYTHON_SERIES ..."
+    rm -rf "$VENV"
+fi
+if [ ! -x "$VENV/bin/python" ]; then
+    uv venv --python "$PYTHON_SERIES" "$VENV"
+fi
+uv pip install --quiet --python "$VENV/bin/python" -r "$SCRIPT_DIR/requirements.txt"
 
 echo
 echo "[3/4] Setting up Wayland/evdev access..."

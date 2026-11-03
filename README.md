@@ -41,8 +41,8 @@ cd dictate
 
 The installer detects apt or pacman (`--distro=debian|arch` overrides) and adds:
 
-- system packages: `xdotool`, `wtype`, `ydotool`, `xclip`, `python3-evdev`, `libnotify-bin`, `python3-venv`, `libxcb-cursor0`, `libportaudio2` (the pacman names on Arch); `ydotool.service` is enabled where the unit exists (ydotool 1.x needs its daemon)
-- a virtual environment in `.venv` next to the scripts with the Python packages from `requirements.txt` (`PyQt6`, `sounddevice`, `pynput`, `requests`, `numpy`, `sherpa-onnx`, `soundfile`, `huggingface_hub`). The venv sees the system packages, so the distro's `python3-evdev` is used and nothing is installed into the system Python
+- system packages: `xdotool`, `wtype`, `ydotool`, `xclip`, `libnotify-bin`, `libxcb-cursor0`, `libportaudio2`, `build-essential`, `curl` (the pacman names on Arch); `ydotool.service` is enabled where the unit exists (ydotool 1.x needs its daemon)
+- [uv](https://docs.astral.sh/uv/), fetched into `~/.local/bin` if it is not there yet (no shell profile is touched), and with it a self-contained **Python 3.12** plus the packages from `requirements.txt` (`PyQt6`, `sounddevice`, `pynput`, `requests`, `numpy`, `sherpa-onnx`, `soundfile`, `huggingface_hub`, `evdev`) in `.venv` next to the scripts. Dictate therefore runs the same interpreter on every machine, whatever Python the distro ships, and nothing is installed into the system Python. `evdev` has no wheel and is compiled on the spot, hence the compiler. A `.venv` from an older `install.sh` is rebuilt
 - membership in group `input` (needed for evdev on Wayland)
 - a desktop entry so **Dictate** shows up in your app menu; it starts `.venv/bin/python gui.py`
 
@@ -66,7 +66,7 @@ Windows must allow desktop apps to use the microphone: *Settings → Privacy & s
 
 ## First run
 
-Launch **Dictate** from the app menu (or `python3 gui.py`). On first launch you will be prompted to pick a provider and paste an API key.
+Launch **Dictate** from the app menu (or `.venv/bin/python gui.py`). On first launch Settings open with the offline **Local** provider preselected: click *Download model* (one-time, about 640 MB) and you can dictate without a key or a network. Groq, OpenAI and Yorik are listed as *Optional* and take an API key instead. An existing configuration keeps its provider.
 
 ## Usage
 
@@ -75,7 +75,7 @@ Default hotkey is **F9**. Hold it, speak, release. The transcription is typed at
 In **Settings** you can change:
 
 - **Language** — the interface in English or German (*Deutsch*); the default follows the system language. Switching applies at once
-- **Provider** — Groq, OpenAI, or Local (Parakeet DE)
+- **Provider** — Local (Parakeet DE, the default), or optionally Groq, OpenAI, Yorik
 - **Mode** — push-to-talk (hold) or toggle (tap to start / tap to stop)
 - **Hotkey** — F1–F12, modifier keys (Ctrl / Alt / Shift / Super), Caps Lock, the Microsoft **Copilot** key, or one of the Logitech-style mouse side buttons (`MOUSE BACK`, `MOUSE FORWARD`, `MOUSE SIDE`, `MOUSE EXTRA`, `MOUSE TASK`). On Linux the Copilot key and the mouse buttons need the evdev backend (i.e. `input`-group setup complete). On Windows the two thumb buttons arrive as `MOUSE BACK` / `MOUSE FORWARD` (`MOUSE SIDE` / `MOUSE EXTRA` are the same two buttons under their Linux names); `MOUSE TASK` and `COPILOT` are Linux-only. Avoid the Super / Windows key on Windows: releasing it opens the Start menu.
   - **Caps Lock**: Dictate only listens to the key, so the desktop would still toggle Caps Lock on every press and the text would come out in capitals. With *Disable the Caps Lock function* (shown below the hotkey, ticked by default) Dictate adds the GNOME keyboard option `caps:none` while it runs and removes it again on quit; other keyboard options are untouched, and a `caps:none` you set yourself stays. Needs GNOME (`gsettings`) and the evdev backend; under the pynput fallback Caps Lock keeps working and Dictate says so. Other desktops: `setxkbmap -option caps:none` by hand
@@ -191,12 +191,12 @@ The CLI variant only works on X11 for the reasons described above. Use `gui.py` 
 ```json
 {
   "ui_language": "auto",
-  "provider": "groq",
+  "provider": "parakeet_local",
   "api_key": "gsk_...",
   "openai_api_key": "sk-...",
   "mode": "ptt",
   "key": "f9",
-  "model": "whisper-large-v3-turbo",
+  "model": "parakeet-primeline-int8",
   "threshold": 2.0,
   "output_method": "paste",
   "disable_capslock": true,
@@ -221,12 +221,12 @@ The CLI variant only works on X11 for the reasons described above. Use `gui.py` 
 
 `polish_model` is one of `gemma4-e2b-q4`, `gemma4-e2b-q8`, `gemma4-e4b-q4`, `gemma4-e4b-q8`; `polish_device` one of `auto`, `cuda`, `vulkan`, `cpu`. `polish_profiles: null` and an empty `polish_default_instructions` use the built-in examples.
 
-For `provider`, valid values are `"groq"`, `"openai"`, `"yorik"`, or `"parakeet_local"`. `output_method` is `"paste"` (default) or `"type"`. `capslock_managed` is written by Dictate itself: it remembers that Dictate added `caps:none`, so only then is it removed again. An older `polish_vocabulary` entry is carried over into `vocabulary` on the next start.
+For `provider`, valid values are `"parakeet_local"` (the default on a fresh install), `"groq"`, `"openai"`, or `"yorik"`. A config without a `provider` entry comes from before providers existed and stays on Groq. `output_method` is `"paste"` (default) or `"type"`. `capslock_managed` is written by Dictate itself: it remembers that Dictate added `caps:none`, so only then is it removed again. An older `polish_vocabulary` entry is carried over into `vocabulary` on the next start.
 
 ## Tests
 
 ```bash
-.venv/bin/pip install pytest
+uv pip install --python .venv/bin/python pytest
 .venv/bin/python -m pytest tests
 ```
 
