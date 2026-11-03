@@ -46,12 +46,22 @@ It ends by printing your own join code. Re-running it is safe.
 
 **A server that already runs other things.** Nothing is deleted. Existing
 firewall rules stay and only ours are added; the firewall is switched on
-only when it was off and nothing else listens for the internet. Headscale
-must own ports 80 and 443; if a web server holds them, the script stops
-before changing anything and says so. The Dictate server listens on the
-private network address only, so it is never exposed whatever the firewall
-does. An existing `/opt/dictate` that is not a Dictate checkout is left
-alone (the script stops).
+only when it was off and nothing else listens for the internet. The Dictate
+server listens on the private network address only, so it is never exposed
+whatever the firewall does. An existing `/opt/dictate` that is not a Dictate
+checkout is left alone (the script stops).
+
+**A web server already on ports 80 and 443.** Then headscale runs behind
+it: on `127.0.0.1:8080` without TLS, the web server terminates HTTPS for
+`https://<name>`. With nginx the script does that itself (a new site file
+`dictate-headscale.conf`, nothing else touched, certificate through
+certbot). With Caddy, Apache or a proxy in Docker it prints what to add and
+waits. Headscale's log then says `listening without TLS`, which is expected
+in that mode. Cloudflare's proxy does not work in front of headscale.
+
+**A server at home** works too, as long as the router forwards ports 80 and
+443 (and 3478/udp for the relay) to it; the DNS check only compares the
+name with the public address.
 
 ### Adding a person or device: one join code
 

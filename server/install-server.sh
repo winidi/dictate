@@ -5,7 +5,8 @@
 #   sudo bash install-server.sh
 #
 # What you need before you start (five minutes, see server/README.md):
-#   - a VPS with Ubuntu 24.04 / 22.04 or Debian 12, 2 GB RAM or more, root access
+#   - a server with Ubuntu 24.04 / 22.04 or Debian 12, 2 GB RAM or more, root access,
+#     reachable from the internet on ports 80 and 443 (a router at home must forward them)
 #   - a DNS name that points at the VPS (any domain, or a free one from
 #     duckdns.org). The Tailscale apps insist on HTTPS for the control server,
 #     and the certificate needs a name.
@@ -22,8 +23,9 @@
 #   5. a `dictate-server` command: add people, print their QR codes, status, logs
 #
 # On a server that already runs other things: existing firewall rules stay,
-# the firewall is only switched on when nothing else listens, and the script
-# stops before changing anything if a web server holds port 80 or 443.
+# the firewall is only switched on when nothing else listens, and when a web
+# server holds port 80 or 443, headscale runs behind it (nginx: set up by the
+# script, others: it prints what to add).
 # Re-running the script is safe; it only changes what differs. Nothing here
 # ever stores audio.
 set -euo pipefail
@@ -78,15 +80,25 @@ while :; do
     warn "$HOST resolves to '${RESOLVED:-nothing}', not to $PUBLIC_IP. Fix the DNS record (it can take a few minutes) and try again."
     read -r -p "    Try again (t) or continue anyway (c)? [t]: " a; [ "${a:-t}" = "c" ] && break
 done
-# Headscale must own ports 80 and 443 (certificate check and control server).
-# A web server that already has them stays untouched: the script stops here.
+# Headscale wants ports 80 and 443 (certificate check and control server).
+# When a web server already holds them, headscale runs behind it instead:
+# on 127.0.0.1:8080 without TLS, the proxy terminates HTTPS.
 command -v ss >/dev/null 2>&1 || apt-get install -y -qq iproute2 >/dev/null 2>&1 || true
+MODE=direct; PROXY=""
 for port in 80 443; do
     OWNER="$(ss -Hltnp "sport = :$port" 2>/dev/null | sed -n 's/.*users:(("\([^"]*\)".*/\1/p' | sort -u | tr '\n' ' ')"
-    if [ -n "$OWNER" ] && [[ "$OWNER" != *headscale* ]]; then
-        die "port $port is already used by: $OWNER. Headscale needs 80 and 443 for itself. Use a VPS without a web server, or stop that service first. Nothing was changed."
-    fi
+    if [ -n "$OWNER" ] && [[ "$OWNER" != *headscale* ]]; then MODE=proxy; PROXY="${PROXY}${OWNER}"; fi
 done
+PROXY="$(echo "$PROXY" | tr ' ' '\n' | sort -u | tr '\n' ' ')"
+if [ "$MODE" = proxy ]; then
+    echo
+    warn "Port 80/443 is already used by: $PROXY"
+    echo "    Headscale will run behind that web server: it listens on 127.0.0.1:8080 only, and the"
+    echo "    web server forwards https://$HOST to it. For nginx the script sets that up itself"
+    echo "    (a new site file, certificate via certbot); for Caddy, Apache or a proxy in Docker it"
+    echo "    prints what to add and waits. The existing sites are not touched."
+    read -r -p "    Continue (y) or stop here without changes (n)? [y]: " a; [ "${a:-y}" = y ] || exit 0
+fi
 ask ADMIN "Your name (the first user, letters and digits only)" "$(logname 2>/dev/null || echo me)"
 ADMIN="$(echo "$ADMIN" | tr -cd 'a-zA-Z0-9-' | tr 'A-Z' 'a-z')"; [ -n "$ADMIN" ] || die "the name must have letters or digits"
 ask EMAIL "Email for Let's Encrypt expiry warnings (optional)" ""
@@ -135,12 +147,35 @@ if ! headscale version 2>/dev/null | grep -q "$HEADSCALE_VERSION"; then
     rm -f "$DEB"
 fi
 ok "headscale $(headscale version 2>/dev/null | head -1)"
-mkdir -p /etc/headscale /var/lib/headscale
-cat > /etc/headscale/config.yaml <<EOF
-# Written by dictate's install-server.sh. Reference: config-example.yaml of headscale ${HEADSCALE_VERSION}.
+HS_CONFIG="${HEADSCALE_CONFIG:-/etc/headscale/config.yaml}"
+mkdir -p "$(dirname "$HS_CONFIG")" /var/lib/headscale
+if [ "$MODE" = direct ]; then
+    LISTEN="0.0.0.0:443"; TRUSTED="[]"
+    TLS_BLOCK="tls_letsencrypt_hostname: ${HOST}
+tls_letsencrypt_listen: \":http\"
+tls_letsencrypt_cache_dir: /var/lib/headscale/cache
+tls_letsencrypt_challenge_type: HTTP-01
+acme_url: https://acme-v02.api.letsencrypt.org/directory
+acme_email: \"${EMAIL}\"
+tls_cert_path: \"\"
+tls_key_path: \"\""
+else
+    LISTEN="127.0.0.1:8080"
+    TRUSTED="
+  - 127.0.0.1/32
+  - ::1/128"
+    TLS_BLOCK="# TLS ends at the reverse proxy; headscale logs 'listening without TLS', which is expected.
+tls_cert_path: \"\"
+tls_key_path: \"\""
+fi
+cat > "$HS_CONFIG" <<EOF
+# Written by dictate's install-server.sh (mode: ${MODE}). Keys as in headscale ${HEADSCALE_VERSION}'s config-example.yaml.
 server_url: https://${HOST}
-listen_addr: 0.0.0.0:443
+listen_addr: ${LISTEN}
 metrics_listen_addr: 127.0.0.1:9090
+grpc_listen_addr: 127.0.0.1:50443
+grpc_allow_insecure: false
+trusted_proxies: ${TRUSTED}
 noise:
   private_key_path: /var/lib/headscale/noise_private.key
 prefixes:
@@ -150,7 +185,7 @@ prefixes:
 derp:
   # The built-in relay carries traffic when phone and PC cannot reach each
   # other directly (mobile carriers' NAT). Still end-to-end encrypted: the
-  # relay sees only WireGuard ciphertext.
+  # relay sees only WireGuard ciphertext. It rides on the control port.
   server:
     enabled: true
     region_id: 999
@@ -176,14 +211,7 @@ database:
   sqlite:
     path: /var/lib/headscale/db.sqlite
     write_ahead_log: true
-tls:
-  acme:
-    hostname: ${HOST}
-    challenge_type: HTTP-01
-    http_listen: ":http"
-    url: https://acme-v02.api.letsencrypt.org/directory
-    email: "${EMAIL}"
-    cache_dir: /var/lib/headscale/cache
+${TLS_BLOCK}
 log:
   level: info
   format: text
@@ -198,7 +226,9 @@ dns:
     global:
       - 1.1.1.1
       - 9.9.9.9
+    split: {}
   search_domains: []
+  extra_records: []
 unix_socket: /var/run/headscale/headscale.sock
 unix_socket_permission: "0770"
 logtail:
@@ -207,11 +237,92 @@ EOF
 chown -R headscale:headscale /etc/headscale /var/lib/headscale 2>/dev/null || true
 systemctl enable headscale >/dev/null 2>&1
 systemctl restart headscale
-printf '    waiting for headscale and its certificate '
+sleep 2
+if ! systemctl is-active --quiet headscale; then
+    journalctl -u headscale -n 30 --no-pager
+    die "headscale did not start; the lines above say why"
+fi
+ok "headscale runs ($MODE)"
+
+if [ "$MODE" = proxy ]; then
+    if [[ "$PROXY" == *nginx* ]] && [ -d /etc/nginx/sites-enabled ]; then
+        say "nginx: a site for https://${HOST} -> headscale"
+        SITE=/etc/nginx/sites-available/dictate-headscale.conf
+        if [ ! -f "$SITE" ]; then
+            cat > "$SITE" <<EOF
+# Headscale (the Dictate private network), written by install-server.sh.
+# certbot adds the HTTPS part. Needs the WebSocket upgrade exactly like this.
+map \$http_upgrade \$connection_upgrade_headscale {
+  default keep-alive;
+  ''      close;
+}
+server {
+  listen 80;
+  listen [::]:80;
+  server_name ${HOST};
+  location = /generate_204 { return 204; }
+  location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade \$http_upgrade;
+    proxy_set_header Connection \$connection_upgrade_headscale;
+    proxy_set_header Host \$host;
+    proxy_set_header True-Client-IP \$remote_addr;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+    proxy_redirect http://127.0.0.1:8080 https://${HOST};
+    proxy_buffering off;
+    proxy_read_timeout 1d;
+    proxy_send_timeout 1d;
+  }
+}
+EOF
+            ln -sf "$SITE" /etc/nginx/sites-enabled/dictate-headscale.conf
+            nginx -t >/dev/null 2>&1 || { rm -f /etc/nginx/sites-enabled/dictate-headscale.conf; die "nginx rejects the new site (nginx -t); the file is $SITE, nothing was enabled"; }
+            systemctl reload nginx
+            ok "$SITE enabled (HTTP for now)"
+        fi
+        if ! command -v certbot >/dev/null 2>&1; then
+            apt-get install -y -qq certbot python3-certbot-nginx >/dev/null 2>&1 || warn "could not install certbot"
+        fi
+        if command -v certbot >/dev/null 2>&1; then
+            if [ -n "$EMAIL" ]; then MAIL_ARGS=(-m "$EMAIL"); else MAIL_ARGS=(--register-unsafely-without-email); fi
+            certbot --nginx -d "$HOST" --non-interactive --agree-tos --redirect "${MAIL_ARGS[@]}" \
+                && ok "certificate for $HOST installed, renews itself" \
+                || warn "certbot failed (DNS must point here and port 80 must be reachable from the internet). Run later: certbot --nginx -d $HOST"
+        fi
+    else
+        say "Your reverse proxy ($PROXY) needs a site for https://${HOST}"
+        echo "    Forward https://${HOST} to http://127.0.0.1:8080 with WebSocket upgrade allowed."
+        echo "    The Tailscale protocol upgrades with POST and the header 'Upgrade: tailscale-control-protocol',"
+        echo "    so a proxy must pass any Upgrade value, not only 'websocket'. Examples:"
+        echo
+        echo "    Caddy (Caddyfile):"
+        echo "      ${HOST} {"
+        echo "        reverse_proxy 127.0.0.1:8080"
+        echo "      }"
+        echo
+        echo "    Apache: ProxyPreserveHost On / ProxyPass / http://127.0.0.1:8080/ upgrade=any  (+ SSL as usual)"
+        echo "    Nginx Proxy Manager / Traefik in Docker: proxy host ${HOST} -> http://<this host>:8080, WebSockets on;"
+        echo "      headscale must then listen where the container reaches it: set listen_addr in"
+        echo "      /etc/headscale/config.yaml to 0.0.0.0:8080, restart headscale, keep 8080 closed in the firewall."
+        echo "    Cloudflare proxy/tunnel does not work (no WebSocket POST)."
+        echo
+        read -r -p "    Press Enter once the proxy forwards https://${HOST} (Ctrl-C to stop) ..." _
+    fi
+fi
+
+printf '    waiting for https://%s/health ' "$HOST"
 for i in $(seq 1 60); do
     if curl -fsS "https://${HOST}/health" >/dev/null 2>&1; then echo; break; fi
     printf '.'; sleep 3
-    [ "$i" -eq 60 ] && { echo; journalctl -u headscale -n 30 --no-pager; die "https://${HOST}/health does not answer. Is port 80/443 reachable from the internet and the DNS name right?"; }
+    if [ "$i" -eq 60 ]; then
+        echo; journalctl -u headscale -n 20 --no-pager
+        echo
+        echo "    headscale itself: $(curl -fsS "http://127.0.0.1:${LISTEN##*:}/health" 2>/dev/null || echo 'does not answer on localhost either')"
+        die "https://${HOST}/health does not answer. Checks: does ${HOST} resolve to ${PUBLIC_IP} (dig +short ${HOST})? Are ports 80 and 443 open from the internet (a router at home must forward them)? In proxy mode: does the proxy forward to 127.0.0.1:8080?"
+    fi
 done
 ok "https://${HOST} is up"
 headscale users list -o json 2>/dev/null | jq -e --arg u "$ADMIN" 'map(select(.name==$u)) | length > 0' >/dev/null 2>&1 \
