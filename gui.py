@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
 """Dictate GUI — PyQt6 tray app for voice dictation (Linux, Windows, macOS)."""
+import os
 import struct
 import sys
 import threading
 import time
+
+# pythonw.exe, which the Windows Start Menu shortcut uses, starts without a
+# console: sys.stdout and sys.stderr are None, and anything that prints fails.
+# The model downloads did ("'NoneType' object has no attribute 'write'" from
+# huggingface_hub's progress bar, issue #20). Send such output nowhere instead.
+for _stream in ("stdout", "stderr"):
+    if getattr(sys, _stream) is None:
+        setattr(sys, _stream, open(os.devnull, "w", encoding="utf-8"))
 
 import numpy as np
 from PyQt6.QtCore import QBuffer, QIODevice, Qt, QObject, QTimer, pyqtSignal

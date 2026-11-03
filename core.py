@@ -149,7 +149,7 @@ DEFAULT_CONFIG = {
     "mode":                  "ptt",
     "key":                   "f9",
     "model":                 DEFAULT_MODEL,
-    "threshold":             0.0,
+    "threshold":             2.0,   # seconds; a shorter hold is discarded
     "local_stt_num_threads": 4,    # sherpa-onnx CPU thread count for parakeet_local
     "ui_language":           "auto",   # auto (system) | en | de
     "yorik_url":             "http://127.0.0.1:8000",  # Yorik base URL (provider "yorik")

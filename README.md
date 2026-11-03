@@ -78,7 +78,7 @@ In **Settings** you can change:
 - **Hotkey** — F1–F12, modifier keys (Ctrl / Alt / Shift / Super), or one of the Logitech-style mouse side buttons (`MOUSE BACK`, `MOUSE FORWARD`, `MOUSE SIDE`, `MOUSE EXTRA`, `MOUSE TASK`). On Linux the mouse buttons need the evdev backend (i.e. `input`-group setup complete). On Windows the two thumb buttons arrive as `MOUSE BACK` / `MOUSE FORWARD` (`MOUSE SIDE` / `MOUSE EXTRA` are the same two buttons under their Linux names); `MOUSE TASK` is Linux-only. Avoid the Super / Windows key on Windows: releasing it opens the Start menu.
 - **Model** — provider-specific list (cloud only)
 - **CPU threads** (Local only) — sherpa-onnx worker threads. 4 is the sweet spot on typical CPUs; more brings little benefit and starves the rest of the system.
-- **Min hold to send** — recordings shorter than this duration are discarded. Recommended ~2.0s when bound to Ctrl / Alt / Shift so regular keyboard shortcuts do not trigger recording.
+- **Min hold to send** — recordings shorter than this duration are discarded. The default is 2.0 s, so a short press of Ctrl / Alt / Shift does not produce text. Set it to 0 to keep every recording.
 
 ## Local (offline) transcription
 
@@ -188,7 +188,7 @@ The CLI variant only works on X11 for the reasons described above. Use `gui.py` 
   "mode": "ptt",
   "key": "f9",
   "model": "whisper-large-v3-turbo",
-  "threshold": 0.0,
+  "threshold": 2.0,
   "local_stt_num_threads": 4,
   "polish_enabled": false,
   "polish_backend": "builtin",
