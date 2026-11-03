@@ -45,21 +45,30 @@ warnings, whether this VPS should transcribe itself) and then installs:
 It ends by printing your own network key and dictation token. Re-running it
 is safe.
 
-### Adding a person or device
+### Adding a person or device: one join code
 
 ```bash
 dictate-server add anna
 ```
 
-prints what Anna has to do, once:
+prints a single join code, `dictate://join?control=...&key=...&server=...&token=...`,
+and a QR code of it. It carries everything a device needs: the network, a
+key to join it (7 days, several devices), the server address and Anna's
+token.
 
+- **PC with Dictate, Linux**: `./server/join.sh '<code>'` installs the
+  Tailscale client, joins the network, checks that the server accepts the
+  token and switches Dictate to the "Dictate server" provider. Add `--serve`
+  and the PC becomes a server as well, with its own Parakeet and Gemma for
+  the phone (a user systemd service; it prints a second URL and token for
+  the phone).
+- **PC with Dictate, Windows**: `powershell -ExecutionPolicy Bypass -File server\join.ps1 '<code>'`
+  does the same (Tailscale through winget or its MSI).
 - **Phone**: install *Tailscale* (Play Store or F-Droid). Settings → Accounts →
   three dots → *Use an alternate server* → `https://<your name>`. Close the
-  login page, then Accounts → three dots → *Use an auth key* → the key printed.
-  The key works for seven days and for several devices (phone and laptop).
-- **PC**: `tailscale up --login-server https://<your name> --authkey <key>`
-- **Dictate app or desktop**: server URL `http://dictate-server:8000`, the
-  token printed, or scan the QR code the command shows.
+  login page, then Accounts → three dots → *Use an auth key* → the key from
+  the code. Then the Dictate app scans the QR code. (Tailscale's app cannot
+  read our QR code itself, so these two taps stay manual.)
 
 `dictate-server list`, `remove <name>`, `status`, `logs` and `update` do what
 they say.

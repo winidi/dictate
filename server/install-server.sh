@@ -286,26 +286,32 @@ case "${1:-}" in
     KEY="$(headscale preauthkeys create --user "$NAME" --reusable --expiration 168h -o json | jq -r '.key // .')"
     TOKEN=""; have_local && TOKEN="$(token_cmd add "$NAME")"
     TS_IP="$(tailscale ip -4 2>/dev/null || true)"
+    CODE="dictate://join?control=https://${HOST}&key=${KEY}"
+    [ -n "$TOKEN" ] && CODE="${CODE}&server=http://${TS_IP}:${PORT}&token=${TOKEN}"
     echo
-    echo "================= $NAME: join the private network ================="
-    echo "On the phone: install 'Tailscale' (Play Store / F-Droid), open it, then"
-    echo "  Settings (gear) -> Accounts -> three dots -> 'Use an alternate server'"
-    echo "     server:   https://$HOST"
-    echo "  (close the login page) -> Accounts -> three dots -> 'Use an auth key'"
-    echo "     key:      $KEY"
-    echo "On a PC:  tailscale up --login-server https://$HOST --authkey $KEY"
+    echo "=================== $NAME: one join code for everything ==================="
+    echo "$CODE"
+    echo
+    echo "PC with Dictate (Linux):   ./server/join.sh '$CODE'"
+    echo "PC with Dictate (Windows): powershell -ExecutionPolicy Bypass -File server\\join.ps1 '$CODE'"
+    echo "  installs Tailscale, joins the network, points Dictate at the server. Add --serve on"
+    echo "  Linux to make that PC a server too (its own Parakeet and Gemma for the phone)."
+    echo
+    echo "Phone: install 'Tailscale' (Play Store / F-Droid):"
+    echo "  Settings (gear) -> Accounts -> three dots -> 'Use an alternate server' -> https://$HOST"
+    echo "  close the login page -> Accounts -> three dots -> 'Use an auth key' ->"
+    echo "     $KEY"
+    echo "  then the Dictate app: scan the QR code below (or paste the join code)."
     echo "The key works for 7 days and for several devices."
     if [ -n "$TOKEN" ]; then
       echo
-      echo "================= $NAME: the Dictate app / desktop ================="
-      echo "  server URL:  http://dictate-server:$PORT   (or http://$TS_IP:$PORT)"
+      echo "  server URL:  http://${TS_IP}:${PORT}   (also http://dictate-server:${PORT})"
       echo "  token:       $TOKEN"
-      echo "  Scan this with the Dictate app:"
-      qrencode -t ANSIUTF8 -m 1 "dictate://setup?server=http://${TS_IP}:${PORT}&token=${TOKEN}&name=${NAME}"
+      qrencode -t ANSIUTF8 -m 1 "$CODE"
     else
       echo
-      echo "This VPS does not transcribe itself; on your PC run 'python -m server serve' and"
-      echo "'python -m server token add $NAME', then point the app at the PC's address."
+      echo "This VPS does not transcribe itself: on your PC run ./server/join.sh --serve '$CODE'"
+      echo "and give the phone the server URL and token that prints."
     fi
     ;;
   list)
