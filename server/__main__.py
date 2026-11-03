@@ -1,6 +1,6 @@
 """Command line of the Dictate server.
 
-    python -m server serve [--host auto|0.0.0.0|IP] [--port 8000] [--threads 4,2]
+    python -m server serve [--host auto|tailscale|0.0.0.0|IP] [--port 8000] [--threads 4,2]
     python -m server token add <name>      print a new token for a person or device
     python -m server token list
     python -m server token remove <name>
@@ -52,7 +52,18 @@ def cmd_serve(args):
     if not len(tokens):
         print("No tokens yet; nobody could log in. Create one: python -m server token add <name>", file=sys.stderr)
     host = args.host
-    if host == "auto":
+    if host == "tailscale":
+        # A service at boot: Tailscale may still be coming up. Wait a while,
+        # then fail so systemd restarts us; never fall back to a wider bind.
+        for _ in range(60):
+            host = tailscale_ip()
+            if host:
+                break
+            time.sleep(1)
+        else:
+            print("No Tailscale address after 60 s; is tailscaled running and logged in?", file=sys.stderr)
+            sys.exit(1)
+    elif host == "auto":
         host = tailscale_ip() or "127.0.0.1"
         if host == "127.0.0.1":
             print("No Tailscale address found, listening on 127.0.0.1 only. Use --host 0.0.0.0 "
@@ -132,7 +143,8 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("serve", help="run the server")
-    s.add_argument("--host", default="auto", help="auto = this machine's Tailscale address (default)")
+    s.add_argument("--host", default="auto", help="auto = this machine's Tailscale address, else 127.0.0.1 (default); "
+                   "tailscale = wait for the Tailscale address, fail without one (for a service); or an IP")
     s.add_argument("--port", type=int, default=8000)
     s.add_argument("--threads", default="", help="recognizer sizes, e.g. 4,2,2 (default: planned from cores and RAM)")
     s.set_defaults(fn=cmd_serve)

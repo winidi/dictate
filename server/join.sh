@@ -111,7 +111,7 @@ After=network-online.target
 [Service]
 WorkingDirectory=$SCRIPT_DIR
 Environment=PYNPUT_BACKEND=dummy
-ExecStart=$SCRIPT_DIR/.venv/bin/python -m server serve --host auto --port 8000
+ExecStart=$SCRIPT_DIR/.venv/bin/python -m server serve --host tailscale --port 8000
 Restart=on-failure
 RestartSec=5
 
@@ -128,8 +128,8 @@ EOF
     echo "      server URL:  http://$MYIP:8000"
     echo "      token:       $PHONE_TOKEN"
     command -v qrencode >/dev/null 2>&1 && qrencode -t ANSIUTF8 -m 1 "dictate://setup?server=http://${MYIP}:8000&token=${PHONE_TOKEN}&name=pc"
-    echo "    Note: with --host auto the server listens on the Tailscale address only, which exists"
-    echo "    once Tailscale is up; the service retries until then. Polishing follows your Dictate settings."
+    echo "    The server listens on the Tailscale address only (not on the LAN or the internet)."
+    echo "    Polishing follows your Dictate settings."
 else
     echo "    Not now. Later: ./server/join.sh --serve '$CODE'"
 fi

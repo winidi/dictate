@@ -42,8 +42,16 @@ warnings, whether this VPS should transcribe itself) and then installs:
    reachable from the private network only
 5. the `dictate-server` command
 
-It ends by printing your own network key and dictation token. Re-running it
-is safe.
+It ends by printing your own join code. Re-running it is safe.
+
+**A server that already runs other things.** Nothing is deleted. Existing
+firewall rules stay and only ours are added; the firewall is switched on
+only when it was off and nothing else listens for the internet. Headscale
+must own ports 80 and 443; if a web server holds them, the script stops
+before changing anything and says so. The Dictate server listens on the
+private network address only, so it is never exposed whatever the firewall
+does. An existing `/opt/dictate` that is not a Dictate checkout is left
+alone (the script stops).
 
 ### Adding a person or device: one join code
 

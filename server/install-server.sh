@@ -18,9 +18,12 @@
 #   3. the Tailscale client on this VPS, so the server itself is a member of
 #      that network (name: dictate-server)
 #   4. optional: the Dictate server with the Parakeet model on this VPS, as a
-#      system service bound to the network above only
+#      system service listening on the private network address only
 #   5. a `dictate-server` command: add people, print their QR codes, status, logs
 #
+# On a server that already runs other things: existing firewall rules stay,
+# the firewall is only switched on when nothing else listens, and the script
+# stops before changing anything if a web server holds port 80 or 443.
 # Re-running the script is safe; it only changes what differs. Nothing here
 # ever stores audio.
 set -euo pipefail
@@ -75,6 +78,15 @@ while :; do
     warn "$HOST resolves to '${RESOLVED:-nothing}', not to $PUBLIC_IP. Fix the DNS record (it can take a few minutes) and try again."
     read -r -p "    Try again (t) or continue anyway (c)? [t]: " a; [ "${a:-t}" = "c" ] && break
 done
+# Headscale must own ports 80 and 443 (certificate check and control server).
+# A web server that already has them stays untouched: the script stops here.
+command -v ss >/dev/null 2>&1 || apt-get install -y -qq iproute2 >/dev/null 2>&1 || true
+for port in 80 443; do
+    OWNER="$(ss -Hltnp "sport = :$port" 2>/dev/null | sed -n 's/.*users:(("\([^"]*\)".*/\1/p' | sort -u | tr '\n' ' ')"
+    if [ -n "$OWNER" ] && [[ "$OWNER" != *headscale* ]]; then
+        die "port $port is already used by: $OWNER. Headscale needs 80 and 443 for itself. Use a VPS without a web server, or stop that service first. Nothing was changed."
+    fi
+done
 ask ADMIN "Your name (the first user, letters and digits only)" "$(logname 2>/dev/null || echo me)"
 ADMIN="$(echo "$ADMIN" | tr -cd 'a-zA-Z0-9-' | tr 'A-Z' 'a-z')"; [ -n "$ADMIN" ] || die "the name must have letters or digits"
 ask EMAIL "Email for Let's Encrypt expiry warnings (optional)" ""
@@ -92,18 +104,27 @@ ask RUN_LOCAL "Run the transcription on this VPS too? (y/n)" "$DEFAULT_LOCAL"
 say "[1/5] System packages, firewall, automatic updates"
 apt-get update -qq
 apt-get install -y -qq curl ca-certificates ufw qrencode jq unattended-upgrades apt-listchanges >/dev/null
-ufw --force reset >/dev/null
-ufw default deny incoming >/dev/null
-ufw default allow outgoing >/dev/null
-ufw allow 22/tcp    comment 'ssh' >/dev/null
-ufw allow 80/tcp    comment 'headscale: Lets Encrypt' >/dev/null
-ufw allow 443/tcp   comment 'headscale: control + DERP relay' >/dev/null
-ufw allow 3478/udp  comment 'headscale: STUN for the relay' >/dev/null
-ufw allow 41641/udp comment 'tailscale: WireGuard' >/dev/null
-ufw allow in on tailscale0 comment 'everything from the private network' >/dev/null
-ufw --force enable >/dev/null
-dpkg-reconfigure -f noninteractive unattended-upgrades >/dev/null 2>&1 || true
-ok "firewall: 22, 80, 443, 3478/udp, 41641/udp open; the dictate server is reachable from the private network only"
+# Existing rules stay; only ours are added. The firewall is switched on only
+# when it was off and nothing else listens for the internet, otherwise other
+# services on this server would be cut off.
+for rule in "22/tcp ssh" "80/tcp headscale-letsencrypt" "443/tcp headscale-control-and-relay" \
+            "3478/udp headscale-stun" "41641/udp tailscale-wireguard"; do
+    ufw allow "${rule%% *}" comment "${rule#* }" >/dev/null
+done
+ufw allow in on tailscale0 comment 'private network' >/dev/null
+if ufw status | grep -q "^Status: active"; then
+    ok "firewall was already on; rules for 22, 80, 443, 3478/udp, 41641/udp added"
+else
+    OTHERS="$(ss -Hltn 2>/dev/null | awk '{print $4}' | sed 's/.*://' | sort -un | grep -Evx '22|80|443|53|25|5355|9090' | tr '\n' ' ')"
+    if [ -z "$OTHERS" ]; then
+        ufw default deny incoming >/dev/null; ufw default allow outgoing >/dev/null
+        ufw --force enable >/dev/null
+        ok "firewall on: 22, 80, 443, 3478/udp, 41641/udp open, everything else closed"
+    else
+        warn "the firewall stays OFF: other services listen on port(s) $OTHERS and would be cut off."
+        warn "(the dictate server listens on the private network address only, so it is not exposed)"
+    fi
+fi
 
 # ------------------------------------------------------------------ 2 headscale
 say "[2/5] Headscale $HEADSCALE_VERSION"
@@ -219,7 +240,8 @@ if [ "$RUN_LOCAL" = y ]; then
     if [ -d "$APP_DIR/.git" ]; then
         git -C "$APP_DIR" fetch -q origin "$DICTATE_REF" && git -C "$APP_DIR" checkout -q FETCH_HEAD
     else
-        rm -rf "$APP_DIR"; git clone -q --depth 1 --branch "$DICTATE_REF" "$DICTATE_REPO" "$APP_DIR"
+        if [ -e "$APP_DIR" ]; then die "$APP_DIR exists but is not a Dictate checkout; move it away first. Nothing was changed."; fi
+        git clone -q --depth 1 --branch "$DICTATE_REF" "$DICTATE_REPO" "$APP_DIR"
     fi
     chown -R "$SERVICE_USER:$SERVICE_USER" "$APP_DIR"
     if ! command -v uv >/dev/null 2>&1; then
@@ -245,8 +267,9 @@ WorkingDirectory=${APP_DIR}
 Environment=HOME=${STATE_DIR}
 Environment=PYNPUT_BACKEND=dummy
 Environment=HF_HUB_DISABLE_PROGRESS_BARS=1
-# 0.0.0.0 is safe: the firewall lets port ${SERVER_PORT} in from the private network only.
-ExecStart=${APP_DIR}/.venv/bin/python -m server serve --host 0.0.0.0 --port ${SERVER_PORT}
+# Listens on this machine's Tailscale address only: unreachable from the internet,
+# whatever the firewall does. Waits for Tailscale at boot, systemd retries otherwise.
+ExecStart=${APP_DIR}/.venv/bin/python -m server serve --host tailscale --port ${SERVER_PORT}
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
@@ -329,7 +352,7 @@ case "${1:-}" in
   status)
     systemctl --no-pager status headscale tailscaled $(have_local && echo dictate-server) | grep -E "●|Active:" || true
     echo; tailscale status || true
-    have_local && { echo; curl -fsS "http://127.0.0.1:$PORT/health" | jq . || echo "dictate-server does not answer"; }
+    have_local && { echo; curl -fsS "http://$(tailscale ip -4):$PORT/health" | jq . || echo "dictate-server does not answer"; }
     ;;
   logs)  journalctl -u dictate-server -u headscale -n "${2:-50}" --no-pager ;;
   update)
