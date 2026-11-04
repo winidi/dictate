@@ -142,6 +142,7 @@ GET  /health                       no auth: pool and model state
 
 ## The phone app (next step, own repository)
 
-The complete build brief is in [docs/android-app.md](../docs/android-app.md):
-how Wispr Flow does it on Android, the bubble, the accessibility service, the
-codes, the ring of modes, multi-user, permissions, tests and milestones.
+The Android app lives in its own repository. It will show a floating bubble
+beside the keyboard as Wispr Flow does, insert text through an accessibility
+service, and talk to this server with the join and setup codes above,
+`/v1/audio/transcriptions`, `/api/tokens` and `/api/modes`.

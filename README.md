@@ -225,7 +225,7 @@ For `provider`, valid values are `"parakeet_local"` (the default on a fresh inst
 
 ## Phone and other devices: the Dictate server
 
-`server/` turns the recognizer into a small HTTP service for your own devices: run it on your PC (`python -m server serve`, with your Gemma polishing on the GPU) or let `server/install-server.sh` set up a VPS with Headscale, so a phone reaches it through a private WireGuard network. The desktop provider "Dictate server" uses it today; the Android app is the next step, its build brief is [docs/android-app.md](docs/android-app.md). Everything about the server is in [server/README.md](server/README.md). `output_method` is `"paste"` (default) or `"type"`. `capslock_managed` is written by Dictate itself: it remembers that Dictate added `caps:none`, so only then is it removed again. An older `polish_vocabulary` entry is carried over into `vocabulary` on the next start.
+`server/` turns the recognizer into a small HTTP service for your own devices: run it on your PC (`python -m server serve`, with your Gemma polishing on the GPU) or let `server/install-server.sh` set up a VPS with Headscale, so a phone reaches it through a private WireGuard network. The desktop provider "Dictate server" uses it today; the Android app is the next step. Everything about the server is in [server/README.md](server/README.md). `output_method` is `"paste"` (default) or `"type"`. `capslock_managed` is written by Dictate itself: it remembers that Dictate added `caps:none`, so only then is it removed again. An older `polish_vocabulary` entry is carried over into `vocabulary` on the next start.
 
 ## Tests
 
