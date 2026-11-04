@@ -171,6 +171,19 @@ def test_api_transcription_text_json_and_vocabulary(client):
     assert r.status_code == 401
 
 
+def test_api_modes(tmp_path, fake_pool):
+    from fastapi.testclient import TestClient
+    from server.app import create_app
+    store = TokenStore(tmp_path / "tokens.json")
+    token = store.add("anna")
+    cfg = dict(core.DEFAULT_CONFIG, polish_enabled=False,
+               polish_modes=[{"name": "Email", "instructions": "Write an email."}, {"name": " ", "instructions": "x"}])
+    c = TestClient(create_app(cfg, store, fake_pool))
+    assert c.get("/api/modes").status_code == 401
+    body = c.get("/api/modes", headers={"Authorization": f"Bearer {token}"}).json()
+    assert body == {"polish": False, "modes": [{"name": "Email", "instructions": "Write an email."}]}
+
+
 def test_resolve_mode():
     from server.app import resolve_mode
     cfg = {"polish_modes": [{"name": "Email", "instructions": "Write an email."}]}

@@ -135,33 +135,13 @@ POST /v1/audio/transcriptions      Authorization: Bearer dk_...
                   app, title (the window the text goes into)
   -> text, or {"text", "raw", "polished", "duration", "decode_s"}
 GET  /api/tokens                   200 {"tokens": [{"name": ...}]} for a valid token
+GET  /api/modes                    {"polish": bool, "modes": [{"name", "instructions"}]}: the pie-menu
+                                   modes of this server, for the phone's ring
 GET  /health                       no auth: pool and model state
 ```
 
 ## The phone app (next step, own repository)
 
-Wispr Flow on Android does not replace the keyboard. It shows a floating
-bubble beside the keyboard whenever a text field is active; a tap starts
-recording hands-free, holding records until release, and an **accessibility
-service** finds the focused field and inserts the text. Where it cannot
-insert, the text goes to the clipboard with a notification; in password
-fields and banking apps the bubble hides. Permissions: microphone, overlay,
-accessibility, battery exemption. The Dictate app will work the same way:
-
-- Kotlin, Android 10 or newer. A foreground service with the bubble
-  (`SYSTEM_ALERT_WINDOW`), an `AccessibilityService` that reports the focused
-  editable node and inserts with `ACTION_SET_TEXT` or, where that fails,
-  clipboard plus `ACTION_PASTE`, with the clipboard restored afterwards.
-- Tap = toggle, hold = push-to-talk; a short swipe on the bubble picks a
-  mode (Email, Short message ...) like the pie menu on the desktop and sends
-  it as `mode`.
-- Audio 16 kHz mono; WAV first, Opus later to save mobile data.
-- Settings via the `dictate://setup?...` QR code from `dictate-server add`;
-  a list of servers tried in order (PC first, VPS second); "Test connection"
-  against `/api/tokens`; the same notifications as the desktop when a
-  dictation went nowhere.
-- Distribution: APK and F-Droid first; the Play Store afterwards (new
-  personal developer accounts need a 14-day closed test with 12 testers, and
-  an accessibility service needs a prominent disclosure in the app).
-- iOS later and differently: keyboard extensions have no microphone, so it
-  would be a main app plus paste.
+The complete build brief is in [docs/android-app.md](../docs/android-app.md):
+how Wispr Flow does it on Android, the bubble, the accessibility service, the
+codes, the ring of modes, multi-user, permissions, tests and milestones.

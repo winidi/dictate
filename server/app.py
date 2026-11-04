@@ -66,6 +66,21 @@ def create_app(cfg, tokens: TokenStore, pool: RecognizerPool) -> FastAPI:
     def api_tokens(name: str = Depends(caller)):
         return {"tokens": [{"name": name}]}
 
+    @app.get("/api/modes")
+    def api_modes(name: str = Depends(caller)):
+        """The pie-menu modes this server knows, so the phone app offers the
+        same ring as the desktop, plus whether written text is available."""
+        modes = cfg.get("polish_modes")
+        if modes is None:
+            try:
+                import pie
+                modes = pie.DEFAULT_MODES
+            except Exception:
+                modes = []
+        return {"polish": bool(cfg.get("polish_enabled")),
+                "modes": [{"name": m.get("name", ""), "instructions": m.get("instructions", "")}
+                          for m in modes if (m.get("name") or "").strip()]}
+
     @app.post("/v1/audio/transcriptions")
     async def transcriptions(
         request: Request,
