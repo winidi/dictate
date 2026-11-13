@@ -814,7 +814,7 @@ def _app_icon_pixmap(size, state=None):
         pen = p.pen()
         pen.setWidth(4)
         p.setPen(pen)
-        p.setBrush(QColor(STATUS_COLORS.get(state, STATUS_COLORS["ready"])))
+        p.setBrush(QColor(STATUS_DOT_COLORS.get(state, STATUS_DOT_COLORS["ready"])))
         p.drawEllipse(42, 42, 20, 20)
     p.end()
     return pix
@@ -858,19 +858,36 @@ STATUS_STYLES = {
 }
 
 # Icon colour per status, so the tray/taskbar icon shows the state even when
-# the window is minimised. The dark variants are used on a dark Windows
-# taskbar, where a dark icon would be invisible.
+# the window is minimised.
+#
+# Two sets, because the two icons sit on different backgrounds:
+#   * STATUS_COLORS draws the free-standing microphone in the tray. It hangs
+#     directly on the panel, which is light on some desktops and dark on
+#     others, so "ready" is a mid grey that reads on both instead of the
+#     near-black that vanished on dark panels.
+#   * STATUS_COLORS_DARK is the variant for a dark Windows taskbar.
+#   * STATUS_DOT_COLORS paints the status dot on the app icon, which always
+#     sits on the blue/violet logo square — there it needs to be vivid.
 STATUS_COLORS = {
-    "ready":        "#2b2b2b",
-    "recording":    "#d32f2f",
+    # Mid grey: reads on a light panel as well as on a dark one (contrast
+    # >= 3:1 against both #f0f0f0 and #2b2b2b). The near-black that was
+    # used before vanished on dark shells.
+    "ready":        "#82868b",
+    "recording":    "#e53935",
     "transcribing": "#f9a825",
-    "error":        "#b71c1c",
+    "error":        "#d32f2f",
 }
 STATUS_COLORS_DARK = {
-    "ready":        "#f0f0f0",
-    "recording":    "#ef5350",
+    "ready":        "#e0e0e0",
+    "recording":    "#ff6b6b",
     "transcribing": "#ffca28",
-    "error":        "#ef5350",
+    "error":        "#ff5252",
+}
+STATUS_DOT_COLORS = {
+    "ready":        "#82868b",
+    "recording":    "#ff5252",
+    "transcribing": "#ffca28",
+    "error":        "#ff1744",
 }
 
 
