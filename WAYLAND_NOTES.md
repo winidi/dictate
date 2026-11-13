@@ -28,9 +28,9 @@ Between 00:13 and 01:16 there was **no Xorg NVIDIA module installed**. Any GDM r
 
 `xdotool type` uses X11's `XTEST` extension. Native Wayland windows (Firefox with the Wayland backend, GNOME Terminal, GNOME Files, most modern GTK4 apps) do not accept synthetic input from XWayland. The characters go into the void with no error.
 
-**Fix:** use `ydotool` instead, which writes to `/dev/uinput`. That is a kernel interface below both X and Wayland, so any focused window receives the keystrokes. Ubuntu 24.04's `ydotool` 0.1.8 works standalone (no `ydotoold` daemon needed), just warns about missing daemon. `/dev/uinput` is accessible when the user is in the `input` group (the ACL is granted automatically by `systemd-logind`).
+**Fix:** use `ydotool` instead, which writes to `/dev/uinput`. That is a kernel interface below both X and Wayland, so any focused window receives the keystrokes. Ubuntu 24.04's `ydotool` 0.1.8 works standalone (no `ydotoold` daemon needed), just warns about missing daemon. ydotool 1.x (Arch) *does* need `ydotoold`: `systemctl --user enable --now ydotool.service`. `/dev/uinput` is accessible when the user is in the `input` group (the ACL is granted automatically by `systemd-logind`).
 
-`core.type_text` tries `ydotool` first and falls back to `xdotool` if the binary is missing.
+`ydotool` sends US scancodes, so on a German layout `y`/`z` swap and umlauts break. `core.type_text` therefore tries `wtype` first on Wayland (layout-aware, Unicode, works on niri/Sway/KDE but not GNOME), then `ydotool`, then `xdotool`.
 
 ## Bug 3 — `sd.InputStream.stop()` freezes the Qt main thread
 
