@@ -15,7 +15,7 @@ for _stream in ("stdout", "stderr"):
         setattr(sys, _stream, open(os.devnull, "w", encoding="utf-8"))
 
 import numpy as np
-from PyQt6.QtCore import QBuffer, QIODevice, Qt, QObject, QTimer, pyqtSignal
+from PyQt6.QtCore import QBuffer, QIODevice, Qt, QEvent, QObject, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QCursor, QIcon, QLinearGradient, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
@@ -749,10 +749,13 @@ def _windows_taskbar_is_dark():
         return True
 
 
-def make_tray_icon():
+def make_tray_icon(state="ready"):
+    """Tray icon for the given status. On a dark Windows taskbar the icon is
+    drawn light so it stays visible."""
+    color = STATUS_COLORS.get(state, STATUS_COLORS["ready"])
     if core.IS_WINDOWS and _windows_taskbar_is_dark():
-        return make_mic_icon("#f0f0f0")
-    return make_mic_icon()
+        color = STATUS_COLORS_DARK.get(state, STATUS_COLORS_DARK["ready"])
+    return make_mic_icon(color)
 
 
 def make_mic_icon(color="#2b2b2b", size=64):
@@ -784,8 +787,10 @@ def _paint_mic(p, color):
 APP_ICON_SIZES = (16, 24, 32, 48, 64, 128, 256)
 
 
-def _app_icon_pixmap(size):
-    """The application icon: a white microphone on a blue rounded square."""
+def _app_icon_pixmap(size, state=None):
+    """The application icon: a white microphone on a blue rounded square.
+    With a state, a coloured dot in the lower right corner carries the
+    status, so the taskbar entry shows what Dictate is doing."""
     pix = QPixmap(size, size)
     pix.fill(Qt.GlobalColor.transparent)
     p = QPainter(pix)
@@ -801,14 +806,28 @@ def _app_icon_pixmap(size):
     p.scale(0.78, 0.78)
     p.translate(-32, -33)
     _paint_mic(p, "#ffffff")
+    p.translate(32, 33)
+    p.scale(1 / 0.78, 1 / 0.78)
+    p.translate(-32, -33)
+    if state and state != "ready":
+        p.setPen(QColor("#ffffff"))
+        pen = p.pen()
+        pen.setWidth(4)
+        p.setPen(pen)
+        p.setBrush(QColor(STATUS_COLORS.get(state, STATUS_COLORS["ready"])))
+        p.drawEllipse(42, 42, 20, 20)
     p.end()
     return pix
 
 
-def make_app_icon():
+def make_app_icon(state=None):
+    """The application icon. With a state, a coloured dot in the corner
+    shows the status (ready / recording / transcribing / error) — the window
+    icon is the one that stays visible in the taskbar when the window is
+    minimised."""
     icon = QIcon()
     for size in APP_ICON_SIZES:
-        icon.addPixmap(_app_icon_pixmap(size))
+        icon.addPixmap(_app_icon_pixmap(size, state))
     return icon
 
 
@@ -836,6 +855,22 @@ STATUS_STYLES = {
     "recording":    ("#fde2e2", "#a00000"),
     "transcribing": ("#fff3cc", "#8a6d00"),
     "error":        ("#ffd6d6", "#9a0000"),
+}
+
+# Icon colour per status, so the tray/taskbar icon shows the state even when
+# the window is minimised. The dark variants are used on a dark Windows
+# taskbar, where a dark icon would be invisible.
+STATUS_COLORS = {
+    "ready":        "#2b2b2b",
+    "recording":    "#d32f2f",
+    "transcribing": "#f9a825",
+    "error":        "#b71c1c",
+}
+STATUS_COLORS_DARK = {
+    "ready":        "#f0f0f0",
+    "recording":    "#ef5350",
+    "transcribing": "#ffca28",
+    "error":        "#ef5350",
 }
 
 
@@ -1307,7 +1342,13 @@ class MainWindow(QMainWindow):
             f"font-size: 24px; padding: 28px; border-radius: 10px;"
             f"background: {bg}; color: {fg};"
         )
+        # The window can be minimised (or hidden entirely), so the icon has to
+        # carry the state as well: the tray icon in the notification area and
+        # the window icon in the taskbar both show what Dictate is doing.
+        self.setWindowIcon(make_app_icon(state))
+        self.setWindowTitle(f"Dictate — {msg}")
         if self.tray:
+            self.tray.setIcon(make_tray_icon(state))
             self.tray.setToolTip(f"Dictate — {msg}")
 
     def on_tray(self, reason):
@@ -1321,6 +1362,15 @@ class MainWindow(QMainWindow):
         self.showNormal()
         self.raise_()
         self.activateWindow()
+
+    def changeEvent(self, event):
+        """Minimising hides the window instead of parking it in the taskbar:
+        the tray icon stays visible and keeps showing the status, so a
+        minimised Dictate is still recognisable as idle / recording."""
+        super().changeEvent(event)
+        if (event.type() == QEvent.Type.WindowStateChange
+                and self.isMinimized() and self.tray):
+            self.hide()
 
     def closeEvent(self, event):
         QApplication.quit()
