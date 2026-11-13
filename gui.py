@@ -15,7 +15,7 @@ for _stream in ("stdout", "stderr"):
         setattr(sys, _stream, open(os.devnull, "w", encoding="utf-8"))
 
 import numpy as np
-from PyQt6.QtCore import QBuffer, QIODevice, Qt, QObject, QTimer, pyqtSignal
+from PyQt6.QtCore import QBuffer, QIODevice, Qt, QEvent, QObject, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QCursor, QIcon, QLinearGradient, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
@@ -30,10 +30,22 @@ import i18n
 import pie
 import polish
 from i18n import tr
+from core import COPILOT_KEY
 
 # Arrow keys choose a pie-menu mode while the hotkey is held.
 ARROW_KEYS = {keyboard.Key.up: "up", keyboard.Key.down: "down",
               keyboard.Key.left: "left", keyboard.Key.right: "right"}
+
+
+def _tolerated_presses():
+    """Key presses that belong to an ongoing gesture and must not cancel a take.
+
+    Only Super/Shift: HP's Copilot key is a firmware macro that presses
+    left-Meta and left-Shift before the key itself, so those two must not
+    arrive as "another key" and abort the recording. Everything else —
+    including a mouse click — still cancels, as before.
+    """
+    return frozenset(core.KEY_MAP["super"]) | frozenset(core.KEY_MAP["shift"])
 
 
 class PynputListener:
@@ -737,10 +749,13 @@ def _windows_taskbar_is_dark():
         return True
 
 
-def make_tray_icon():
+def make_tray_icon(state="ready"):
+    """Tray icon for the given status. On a dark Windows taskbar the icon is
+    drawn light so it stays visible."""
+    color = STATUS_COLORS.get(state, STATUS_COLORS["ready"])
     if core.IS_WINDOWS and _windows_taskbar_is_dark():
-        return make_mic_icon("#f0f0f0")
-    return make_mic_icon()
+        color = STATUS_COLORS_DARK.get(state, STATUS_COLORS_DARK["ready"])
+    return make_mic_icon(color)
 
 
 def make_mic_icon(color="#2b2b2b", size=64):
@@ -772,8 +787,10 @@ def _paint_mic(p, color):
 APP_ICON_SIZES = (16, 24, 32, 48, 64, 128, 256)
 
 
-def _app_icon_pixmap(size):
-    """The application icon: a white microphone on a blue rounded square."""
+def _app_icon_pixmap(size, state=None):
+    """The application icon: a white microphone on a blue rounded square.
+    With a state, a coloured dot in the lower right corner carries the
+    status, so the taskbar entry shows what Dictate is doing."""
     pix = QPixmap(size, size)
     pix.fill(Qt.GlobalColor.transparent)
     p = QPainter(pix)
@@ -789,14 +806,28 @@ def _app_icon_pixmap(size):
     p.scale(0.78, 0.78)
     p.translate(-32, -33)
     _paint_mic(p, "#ffffff")
+    p.translate(32, 33)
+    p.scale(1 / 0.78, 1 / 0.78)
+    p.translate(-32, -33)
+    if state and state != "ready":
+        p.setPen(QColor("#ffffff"))
+        pen = p.pen()
+        pen.setWidth(4)
+        p.setPen(pen)
+        p.setBrush(QColor(STATUS_DOT_COLORS.get(state, STATUS_DOT_COLORS["ready"])))
+        p.drawEllipse(42, 42, 20, 20)
     p.end()
     return pix
 
 
-def make_app_icon():
+def make_app_icon(state=None):
+    """The application icon. With a state, a coloured dot in the corner
+    shows the status (ready / recording / transcribing / error) — the window
+    icon is the one that stays visible in the taskbar when the window is
+    minimised."""
     icon = QIcon()
     for size in APP_ICON_SIZES:
-        icon.addPixmap(_app_icon_pixmap(size))
+        icon.addPixmap(_app_icon_pixmap(size, state))
     return icon
 
 
@@ -824,6 +855,39 @@ STATUS_STYLES = {
     "recording":    ("#fde2e2", "#a00000"),
     "transcribing": ("#fff3cc", "#8a6d00"),
     "error":        ("#ffd6d6", "#9a0000"),
+}
+
+# Icon colour per status, so the tray/taskbar icon shows the state even when
+# the window is minimised.
+#
+# Two sets, because the two icons sit on different backgrounds:
+#   * STATUS_COLORS draws the free-standing microphone in the tray. It hangs
+#     directly on the panel, which is light on some desktops and dark on
+#     others, so "ready" is a mid grey that reads on both instead of the
+#     near-black that vanished on dark panels.
+#   * STATUS_COLORS_DARK is the variant for a dark Windows taskbar.
+#   * STATUS_DOT_COLORS paints the status dot on the app icon, which always
+#     sits on the blue/violet logo square — there it needs to be vivid.
+STATUS_COLORS = {
+    # Mid grey: reads on a light panel as well as on a dark one (contrast
+    # >= 3:1 against both #f0f0f0 and #2b2b2b). The near-black that was
+    # used before vanished on dark shells.
+    "ready":        "#82868b",
+    "recording":    "#e53935",
+    "transcribing": "#f9a825",
+    "error":        "#d32f2f",
+}
+STATUS_COLORS_DARK = {
+    "ready":        "#e0e0e0",
+    "recording":    "#ff6b6b",
+    "transcribing": "#ffca28",
+    "error":        "#ff5252",
+}
+STATUS_DOT_COLORS = {
+    "ready":        "#82868b",
+    "recording":    "#ff5252",
+    "transcribing": "#ffca28",
+    "error":        "#ff1744",
 }
 
 
@@ -1035,16 +1099,23 @@ class MainWindow(QMainWindow):
         self._target_keys = set(keys)
 
         # injected: a key sent by a program, above all our own Ctrl+V when pasting.
+        # Super/Shift presses and plain mouse clicks are not deliberate
+        # "another key" gestures, so they never cancel an in-flight take.
+        # A genuine Ctrl+C or letter key still cancels as before.
+        _tolerated = _tolerated_presses()
+
         def on_press(k, injected=False):
             if injected:
                 return
             try:
+                if k in _tolerated:
+                    return
                 if k in self._target_keys:
                     self.bridge.hotkey_press.emit()
                 elif self.tracker.active and k in ARROW_KEYS:
                     # Picks a pie-menu mode instead of cancelling the recording.
                     self.tracker.set_segment(pie.segment_for_arrow(ARROW_KEYS[k], self.tracker.n))
-                else:
+                elif k is not COPILOT_KEY:
                     self._last_other = k
                     self.bridge.other_press.emit()
             except Exception:
@@ -1288,7 +1359,13 @@ class MainWindow(QMainWindow):
             f"font-size: 24px; padding: 28px; border-radius: 10px;"
             f"background: {bg}; color: {fg};"
         )
+        # The window can be minimised (or hidden entirely), so the icon has to
+        # carry the state as well: the tray icon in the notification area and
+        # the window icon in the taskbar both show what Dictate is doing.
+        self.setWindowIcon(make_app_icon(state))
+        self.setWindowTitle(f"Dictate — {msg}")
         if self.tray:
+            self.tray.setIcon(make_tray_icon(state))
             self.tray.setToolTip(f"Dictate — {msg}")
 
     def on_tray(self, reason):
@@ -1302,6 +1379,15 @@ class MainWindow(QMainWindow):
         self.showNormal()
         self.raise_()
         self.activateWindow()
+
+    def changeEvent(self, event):
+        """Minimising hides the window instead of parking it in the taskbar:
+        the tray icon stays visible and keeps showing the status, so a
+        minimised Dictate is still recognisable as idle / recording."""
+        super().changeEvent(event)
+        if (event.type() == QEvent.Type.WindowStateChange
+                and self.isMinimized() and self.tray):
+            self.hide()
 
     def closeEvent(self, event):
         QApplication.quit()

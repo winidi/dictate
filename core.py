@@ -4,6 +4,7 @@ import json
 import logging
 import logging.handlers
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -108,6 +109,19 @@ def setup_logging():
     log.addHandler(h)
     log.setLevel(logging.INFO)
 
+# The Microsoft Copilot key. Two firmware flavours exist in the wild:
+#
+#   * Standards-compliant keyboards (kernel >= 6.6) send KEY_ASSISTANT (0x247).
+#   * HP laptops (verified on a ZBook Ultra G1a, XKB "ch") send the *shortcut*
+#     Super+Shift+F23 instead — KEY_F23 (0xc1) with left-Meta and left-Shift
+#     held. There is no KEY_ASSISTANT on that keyboard at all.
+#
+# COPILOT_KEY is the sentinel for the first flavour; the HP one is recognised
+# in the evdev listener from the (Super, Shift, F23) combination, because no
+# other key on a normal keyboard emits F23. Both are reported to the GUI as
+# COPILOT_KEY so a single "copilot" hotkey covers either.
+COPILOT_KEY = getattr(keyboard.Key, "copilot", None) or keyboard.KeyCode.from_vk(0x1008FF2D)
+
 KEY_MAP = {f"f{i}": {getattr(keyboard.Key, f"f{i}")} for i in range(1, 13)}
 KEY_MAP.update({
     "pause":       {keyboard.Key.pause},
@@ -137,6 +151,13 @@ KEY_MAP.update({
     "mouse_side":    {("mouse", "side"),    ("mouse", "x1")},
     "mouse_extra":   {("mouse", "extra"),   ("mouse", "x2")},
     "mouse_task":    {("mouse", "task")},
+    # Microsoft Copilot key (the key that replaced right-Ctrl on newer
+    # keyboards). Windows sends it as a special HID usage and X11 has no
+    # core keysym for it, so this works via the evdev backend on Wayland/
+    # X11 (and on Windows via pynput). Both firmware flavours map here:
+    # KEY_ASSISTANT via COPILOT_KEY, and the HP Super+Shift+F23 shortcut,
+    # which the evdev listener rewrites to COPILOT_KEY before reporting.
+    "copilot":       {COPILOT_KEY},
 })
 
 # Hotkeys the pynput backend (everything but Linux-evdev) cannot deliver.
@@ -253,6 +274,93 @@ WINDOWS_TERMINALS = {"windowsterminal", "openconsole", "conhost", "cmd", "powers
                      "wezterm-gui", "alacritty", "mintty", "putty"}
 
 
+# Swiss German (XKB "ch") on top of evdev keycodes, taken from
+# /usr/share/X11/xkb/symbols/ch. ydotool injects *physical key positions* as
+# on a US keyboard; the compositor applies the active layout. So "y" must be
+# sent as KEY_Z (44) and "z" as KEY_Y (21). Value: (keycode, mods, dead) with
+# mods "" / "S" (Shift) / "A" (AltGr) / "C" (CapsLock toggle); dead=True means a dead key that needs a
+# following Space to yield the bare accent character.
+_CH_KEYS = {}
+_US_LETTER_CODES = dict(zip("abcdefghijklmnopqrstuvwxyz", [
+    30, 48, 46, 32, 18, 33, 34, 35, 23, 36, 37, 38, 50,
+    49, 24, 25, 16, 19, 31, 20, 22, 47, 17, 45, 44, 21]))
+for _c, _k in _US_LETTER_CODES.items():
+    _CH_KEYS[_c] = (_k, "", False)
+    _CH_KEYS[_c.upper()] = (_k, "S", False)
+_CH_KEYS.update({
+    "§": (41, "", False), "°": (41, "S", False),
+    "1": (2, "", False), "+": (2, "S", False),
+    "2": (3, "", False), '"': (3, "S", False), "@": (3, "A", False),
+    "3": (4, "", False), "*": (4, "S", False), "#": (4, "A", False),
+    "4": (5, "", False), "ç": (5, "S", False),
+    "5": (6, "", False), "%": (6, "S", False),
+    "6": (7, "", False), "&": (7, "S", False), "¬": (7, "A", False),
+    "7": (8, "", False), "/": (8, "S", False), "|": (8, "A", False),
+    "8": (9, "", False), "(": (9, "S", False), "¢": (9, "A", False),
+    "9": (10, "", False), ")": (10, "S", False),
+    "0": (11, "", False), "=": (11, "S", False),
+    "'": (12, "", False), "?": (12, "S", False), "´": (12, "A", True),
+    "^": (13, "", True), "`": (13, "S", True), "~": (13, "A", True),
+    "ü": (26, "", False), "è": (26, "S", False), "[": (26, "A", False),
+    "¨": (27, "", True), "!": (27, "S", False), "]": (27, "A", False),
+    "ö": (39, "", False), "é": (39, "S", False),
+    "ä": (40, "", False), "à": (40, "S", False), "{": (40, "A", False),
+    "$": (43, "", False), "£": (43, "S", False), "}": (43, "A", False),
+    "<": (86, "", False), ">": (86, "S", False), "\\": (86, "A", False),
+    ",": (51, "", False), ";": (51, "S", False),
+    ".": (52, "", False), ":": (52, "S", False),
+    "-": (53, "", False), "_": (53, "S", False),
+    " ": (57, "", False), "\n": (28, "", False), "\t": (15, "", False),
+    "€": (18, "A", False),
+    # Capital umlauts: no direct key on Swiss German; CapsLock turns ü/ö/ä into Ü/Ö/Ä.
+    "Ü": (26, "C", False), "Ö": (39, "C", False), "Ä": (40, "C", False),
+})
+_MOD_CODES = {"S": 42, "A": 100}  # KEY_LEFTSHIFT, KEY_RIGHTALT
+_KEY_SPACE = 57
+
+
+def _ch_key_args(text):
+    """ydotool key arguments ("code:state") that type `text` on a Swiss German
+    layout. Characters without a key position are skipped with a warning."""
+    args = []
+    text = text.replace("ß", "ss")  # Swiss German has no ß key; "ss" is the Swiss spelling
+    for ch in text:
+        if ch == "\r":
+            continue
+        entry = _CH_KEYS.get(ch)
+        if entry is None:
+            log.warning("no Swiss German key for %r — skipped", ch)
+            continue
+        code, mods, dead = entry
+        if mods == "C":
+            args += ["58:1", "58:0", f"{code}:1", f"{code}:0", "58:1", "58:0"]
+            continue
+        mod_code = _MOD_CODES.get(mods)
+        if mod_code:
+            args.append(f"{mod_code}:1")
+        args += [f"{code}:1", f"{code}:0"]
+        if mod_code:
+            args.append(f"{mod_code}:0")
+        if dead:
+            args += [f"{_KEY_SPACE}:1", f"{_KEY_SPACE}:0"]
+    return args
+
+
+def _gnome_active_layout():
+    """XKB layout name of GNOME's *active* input source (e.g. 'de', 'ch'), or ''."""
+    try:
+        def get(key):
+            return subprocess.run(
+                ["gsettings", "get", "org.gnome.desktop.input-sources", key],
+                capture_output=True, text=True, timeout=2,
+            ).stdout
+        sources = re.findall(r"\('xkb', '([^']+)'\)", get("sources"))
+        idx = int(get("current").split()[-1])  # "uint32 0" -> 0
+        return sources[idx].split("+")[0] if idx < len(sources) else ""
+    except (FileNotFoundError, subprocess.TimeoutExpired, IndexError, ValueError):
+        return ""
+
+
 def type_text(text, app=""):
     """Put text into the focused window. app is its program name, if known."""
     if not text:
@@ -282,23 +390,43 @@ def type_text(text, app=""):
             notify(tr("Typing failed ({err})", err=e), urgency="critical", timeout_ms=5000)
         return
     on_x11 = os.environ.get("XDG_SESSION_TYPE") == "x11"
-    tools = ["xdotool", "ydotool"] if on_x11 else ["ydotool", "xdotool"]
+    # Wayland: wtype speaks the virtual-keyboard protocol and sends keysyms,
+    # so umlauts, ß and QWERTZ come out right. ydotool only sends raw US-QWERTY
+    # scancodes (wrong Y/Z, no umlauts) and is kept purely as a fallback.
+    tools = ["xdotool", "ydotool"] if on_x11 else ["wtype", "ydotool", "xdotool"]
+    commands = {
+        "wtype": ["wtype", "--", text],
+        "xdotool": ["xdotool", "type", "--delay", "0", "--", text],
+        "ydotool": ["ydotool", "type", "--key-delay", "0", "--", text],
+    }
+    if not on_x11 and _gnome_active_layout() == "ch":
+        # ydotool with Swiss German key positions: correct umlauts and Y/Z on QWERTZ.
+        args = _ch_key_args(text)
+        if args:
+            try:
+                subprocess.run(["ydotool", "key", *args], check=False, stderr=subprocess.DEVNULL)
+            except FileNotFoundError:
+                log.error("ydotool not installed — text not typed")
+                notify(tr("Typing failed (ydotool not installed)"), urgency="critical", timeout_ms=5000)
+        return
     for tool in tools:
         try:
-            if tool == "xdotool":
-                r = subprocess.run(["xdotool", "type", "--delay", "0", "--", text], check=False)
-            else:
-                r = subprocess.run(
-                    ["ydotool", "type", "--key-delay", "0", "--", text],
-                    check=False,
-                    stderr=subprocess.DEVNULL,
-                )
-            if r.returncode != 0:
-                log.error("%s exited with %s — text not typed", tool, r.returncode)
-                notify(tr("Typing failed ({tool} exit {code})", tool=tool, code=r.returncode), urgency="critical", timeout_ms=5000)
-            return
+            r = subprocess.run(
+                commands[tool],
+                check=False,
+                stderr=subprocess.DEVNULL if tool != "xdotool" else None,
+            )
         except FileNotFoundError:
             continue
+        if r.returncode != 0 and tool == "wtype":
+            # Compositor without virtual-keyboard support (e.g. GNOME): nothing
+            # was typed, so try the next tool.
+            log.warning("wtype exited with %s — falling back", r.returncode)
+            continue
+        if r.returncode != 0:
+            log.error("%s exited with %s — text not typed", tool, r.returncode)
+            notify(tr("Typing failed ({tool} exit {code})", tool=tool, code=r.returncode), urgency="critical", timeout_ms=5000)
+        return
 
 
 class Recorder:

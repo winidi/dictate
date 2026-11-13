@@ -289,6 +289,7 @@ DE = {
     # --- core / polish / local_stt messages ----------------------------------
     "Typing failed ({tool} exit {code})": "Tippen fehlgeschlagen ({tool} Exit {code})",
     "Typing failed ({err})": "Tippen fehlgeschlagen ({err})",
+    "Typing failed (ydotool not installed)": "Tippen fehlgeschlagen (ydotool nicht installiert)",
     "Downloading model (~640 MB, one-time) ...": "Lade Modell herunter (~640 MB, einmalig) ...",
     "Model downloaded.": "Modell heruntergeladen.",
     "Unpacking {asset} ...": "Entpacke {asset} ...",
